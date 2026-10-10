@@ -4,6 +4,7 @@ mod outbox;
 pub mod teleport;
 pub use outbox::Journal;
 mod accounts;
+pub mod automation;
 mod catalog;
 mod guard;
 mod history;
