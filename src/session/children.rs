@@ -137,11 +137,12 @@ impl Manager {
 }
 
 /// Harnesses a cloud agent may start as a child thread; the app has no Cloud thread type for the others.
-const CHILD_HARNESSES: [runtime::Kind; 4] = [
+const CHILD_HARNESSES: [runtime::Kind; 5] = [
     runtime::Kind::Codex,
     runtime::Kind::Claude,
     runtime::Kind::Pi,
     runtime::Kind::OpenCode,
+    runtime::Kind::Hermes,
 ];
 const FINISHED: [&str; 5] = [
     "completed",
@@ -313,7 +314,7 @@ impl Manager {
             let kind = spawn.harness.unwrap_or(p.harness);
             if !CHILD_HARNESSES.contains(&kind) {
                 return Err(Error::Conflict(
-                    "child threads support codex, claude-code, pi and opencode",
+                    "child threads support codex, claude-code, pi, opencode and hermes",
                 ));
             }
             let same = kind == p.harness;
@@ -331,12 +332,17 @@ impl Manager {
             let model = chosen_model
                 .clone()
                 .or(same.then(|| p.model.clone()).flatten());
+            // Many Pi models lack "medium" (DeepSeek V4, Kimi K3), so Pi keeps its own default level.
             let reasoning = spawn
                 .reasoning
                 .clone()
                 .or(same.then(|| p.reasoning.clone()).flatten())
-                .unwrap_or_else(|| "medium".into());
-            let mut input = json!({"harness":kind,"parent_session":parent,"prompt":spawn.prompt,"reasoning":reasoning,"notify":true});
+                .or((kind != runtime::Kind::Pi).then(|| "medium".into()));
+            let mut input =
+                json!({"harness":kind,"parent_session":parent,"prompt":spawn.prompt,"notify":true});
+            if let Some(reasoning) = &reasoning {
+                input["reasoning"] = json!(reasoning);
+            }
             if let Some(model) = &chosen_model {
                 input["model"] = json!(model);
             }
@@ -370,9 +376,10 @@ impl Manager {
             return Err(Error::Conflict("harness is not configured"));
         }
         self.harness_ready(kind).await?;
-        let reasoning = input["reasoning"].as_str().unwrap_or("medium");
-        self.execution_supported(kind, model.as_ref(), reasoning)
-            .await?;
+        if let Some(reasoning) = input["reasoning"].as_str() {
+            self.execution_supported(kind, model.as_ref(), reasoning)
+                .await?;
+        }
         let profile = &self.config.harnesses[&kind];
         let receipt = Receipt {
             request_id: start_id.clone(),

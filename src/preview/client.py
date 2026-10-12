@@ -84,10 +84,10 @@ def website(connection):
 
 class Core:
     """The paired VM's core, or, with `url` and `token`, one awake cloud sandbox's core."""
-    def __init__(self, config, url=None, token=None):
+    def __init__(self, config, url=None, token=None, thread=None):
         connection = private_json(config['connectionFile'])
         self.connection = connection
-        self.sandbox = url is not None
+        self.sandbox, self.thread = url is not None, thread
         self.url = (url or connection['url']).rstrip('/')
         parts = urllib.parse.urlsplit(self.url)
         if (parts.scheme != 'https' and not (parts.scheme == 'http' and parts.hostname in {'localhost', '127.0.0.1', '::1'})) or parts.username or parts.password or parts.query or parts.fragment:
@@ -144,14 +144,33 @@ def cores(config):
                 uuid.UUID(account)
                 credential = base64.b64encode((account + ':' + token).encode()).decode()
                 listed = control(website(connection) + '/api/desktop/sandboxes', {'action': 'awake'}, 'POST', {'Authorization': 'Basic ' + credential})
-                AWAKE['list'] = [(entry['origin'], entry['token']) for entry in listed['sandboxes']]
+                AWAKE['list'] = [(entry['origin'], entry['token'], entry.get('thread')) for entry in listed['sandboxes']]
             except (OSError, ValueError, KeyError, TypeError):
                 pass  # Keep the last list; sandboxes are asked again shortly.
         awake = list(AWAKE['list'])
-    for origin, secret in awake:
+    if config.get('ownThreads'):
+        awake = own_threads(config, awake)
+    for origin, secret, thread in awake:
         with contextlib.suppress(ValueError):
-            found.append(Core(config, origin, secret))
+            found.append(Core(config, origin, secret, thread))
     return found
+
+
+RELEASED = set()
+
+
+def own_threads(config, awake):
+    """Cloudroom Dev shares the real app's account, and a sandbox pairs only its first Mac helper. So Dev keeps the
+    sandboxes of threads it woke (the app lists them in `own-threads`) and unpairs once from every other one."""
+    owned = set()
+    with contextlib.suppress(OSError):
+        owned = set((Path(config['connectionFile']).parent / 'cloudroom-preview' / 'own-threads').read_text().split())
+    for origin, secret, thread in awake:
+        if thread not in owned and secret not in RELEASED:
+            RELEASED.add(secret)
+            with contextlib.suppress(OSError, ValueError):
+                Core(config, origin, secret).request('/device/' + config['device'], method='DELETE')
+    return [entry for entry in awake if entry[2] in owned]
 
 
 class Upstream(http.client.HTTPConnection):
@@ -495,6 +514,34 @@ def mac_level(config):
     return 'full' if value is True else value if value in MAC_LEVELS else 'off'
 
 
+# Each Mac command also goes to the website's Jev check (ADR 0224). It runs beside the job and never delays it:
+# at most four reports in flight, a repeated command is skipped for an hour, and failures are dropped.
+REVIEWS = {'sent': {}, 'lock': threading.Lock(), 'slots': threading.BoundedSemaphore(4)}
+
+
+def review(core, job, level):
+    account, token = (core.connection.get('account') or {}).get('id'), core.connection.get('sandboxToken')
+    key, now = (core.url, job.get('command')), time.monotonic()
+    with REVIEWS['lock']:
+        sent = REVIEWS['sent']
+        for old in [k for k, at in sent.items() if now - at > 3600]:
+            del sent[old]
+        if not account or not token or key in sent or not REVIEWS['slots'].acquire(blocking=False):
+            return
+        sent[key] = now
+
+    def send():
+        try:
+            credential = base64.b64encode((account + ':' + token).encode()).decode()
+            body = {'command': job['command'][:8000], 'cwd': job.get('cwd'), 'write': bool(job.get('write')), 'level': level, 'thread': core.thread}
+            control(website(core.connection) + '/api/desktop/mac-reviews', body, 'POST', {'Authorization': 'Basic ' + credential})
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+        finally:
+            REVIEWS['slots'].release()
+    threading.Thread(target=send, daemon=True).start()
+
+
 def deliver(post, result):
     """Large output travels in parts, then `done` carries the rest. A core without parts (HTTP 422) gets it whole."""
     if len(result['stdout']) + len(result['stderr']) > MAC_PART:
@@ -596,6 +643,8 @@ class MacJobs:
         def post(body):
             core.fetch(core.url + '/v1/mac/results/' + urllib.parse.quote(job['id']), {'device': device, **body}, None, core.headers,
                        MAC_POST_SECONDS)
+        with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
+            review(core, job, mac_level(self.enabled() or {}))
         with contextlib.suppress(OSError, ValueError):
             post({'state': 'running'})
         result = {'state': 'done', 'code': 127, 'stdout': '', 'stderr': '', 'truncated': False}
@@ -834,7 +883,7 @@ def launch(folder, stop=False):
     subprocess.run(['launchctl', 'bootstrap', domain, str(path)], check=True, capture_output=True)
 
 
-def configure(folder, connection_file, activate, allow_private, mac_access=None, launcher=None, restart=False):
+def configure(folder, connection_file, activate, allow_private, mac_access=None, launcher=None, restart=False, own=False):
     folder.mkdir(mode=0o700, parents=True, exist_ok=True); folder.chmod(0o700)
     connection = private_json(connection_file)
     # Sandbox-only accounts have no VM address; their cores come from the website while awake.
@@ -852,7 +901,8 @@ def configure(folder, connection_file, activate, allow_private, mac_access=None,
     binary = [os.stat(path).st_ino for path in (launcher, sys.executable) if path]
     if (activate and not restart and old and old['binding'] == binding and old.get('connectionFile') == str(connection_file)
             and old.get('allowPrivateSsh', False) == allow_private and old.get('macAccess') == mac_access
-            and old.get('launcher') == launcher and old.get('binary') == binary and target.is_file() and target.read_bytes() == source.read_bytes()):
+            and old.get('launcher') == launcher and old.get('binary') == binary and old.get('ownThreads', False) == own
+            and target.is_file() and target.read_bytes() == source.read_bytes()):
         check = ['systemctl', '--user', 'is-active', '--quiet', label(folder) + '.service'] if sys.platform.startswith('linux') else ['launchctl', 'print', f'gui/{os.getuid()}/' + label(folder)]
         active = subprocess.run(check, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if active.returncode == 0:
@@ -863,7 +913,7 @@ def configure(folder, connection_file, activate, allow_private, mac_access=None,
         temporary = folder / 'client.pending'
         temporary.write_bytes(source.read_bytes()); temporary.chmod(0o600); temporary.replace(target)
     config = {'device': old['device'] if old else uuid.uuid4().hex, 'binding': binding, 'connectionFile': str(connection_file),
-              'allowPrivateSsh': allow_private, 'macAccess': mac_access, 'launcher': launcher, 'binary': binary}
+              'allowPrivateSsh': allow_private, 'macAccess': mac_access, 'launcher': launcher, 'binary': binary, **({'ownThreads': True} if own else {})}
     save(folder / 'config.json', config)
     identity(folder)
     if activate:
@@ -881,6 +931,7 @@ def main():
     parser.add_argument('--mac-access', choices=['on', *MAC_LEVELS], help='How much cloud agents may do on this Mac (ADR 0113, 0186); on means full')
     parser.add_argument('--launcher', type=Path, help='Signed Cloudroom executable that starts the macOS helper in Node mode')
     parser.add_argument('--restart', action='store_true', help='Restart a running helper even if its setup is unchanged')
+    parser.add_argument('--own-threads', action='store_true', help='Cloudroom Dev: use only the sandboxes of threads this app woke')
     args = parser.parse_args()
     folder = args.directory.expanduser().resolve()
     if args.command == 'configure':
@@ -888,7 +939,7 @@ def main():
             raise ValueError('--connection is required')
         print(json.dumps(configure(folder, args.connection.expanduser().resolve(strict=True), not args.no_start, args.allow_private_ssh,
                                    'full' if args.mac_access == 'on' else args.mac_access,
-                                   str(args.launcher.resolve(strict=True)) if args.launcher else None, args.restart)))
+                                   str(args.launcher.resolve(strict=True)) if args.launcher else None, args.restart, args.own_threads)))
     elif args.command == 'run':
         run(folder)
     elif args.command in {'stop', 'pause'}:

@@ -638,10 +638,10 @@ impl Manager {
                 let selected = model.unwrap_or(&self.config.harnesses[&kind].model);
                 self.reasoning_supported(kind, selected, reasoning).await?
             }
-            runtime::Kind::Pi | runtime::Kind::Fx => {
-                runtime::PI_REASONING_LEVELS.contains(&reasoning)
-            }
+            runtime::Kind::Pi => runtime::pi_reasoning_accepted(reasoning),
+            runtime::Kind::Fx => runtime::PI_REASONING_LEVELS.contains(&reasoning),
             runtime::Kind::OpenCode => runtime::OPENCODE_REASONING_LEVELS.contains(&reasoning),
+            runtime::Kind::Hermes => runtime::HERMES_REASONING_LEVELS.contains(&reasoning),
         };
         if !supported {
             return Err(Error::Conflict("invalid reasoning effort"));

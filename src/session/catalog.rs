@@ -138,15 +138,18 @@ impl Manager {
                     harness["subagents"] = json!(true);
                     harness["usage"] = json!(true);
                 }
-                runtime::Kind::Cursor | runtime::Kind::Fx | runtime::Kind::OpenCode => {
+                runtime::Kind::Cursor
+                | runtime::Kind::Fx
+                | runtime::Kind::OpenCode
+                | runtime::Kind::Hermes => {
                     let capabilities = runtime::cursor::capabilities(*kind);
                     for (key, value) in capabilities.as_object().unwrap() {
                         harness[key] = value.clone();
                     }
-                    harness["reasoning_levels"] = json!(if *kind == runtime::Kind::OpenCode {
-                        runtime::OPENCODE_REASONING_LEVELS
-                    } else {
-                        runtime::PI_REASONING_LEVELS
+                    harness["reasoning_levels"] = json!(match kind {
+                        runtime::Kind::OpenCode => runtime::OPENCODE_REASONING_LEVELS,
+                        runtime::Kind::Hermes => runtime::HERMES_REASONING_LEVELS,
+                        _ => runtime::PI_REASONING_LEVELS,
                     });
                     // Cursor's print mode has no image input; Cursor and OpenCode open images from the attached path.
                     harness["attachments"] =
@@ -195,7 +198,10 @@ impl Manager {
             let session = local.sessions.get(id).ok_or(Error::NotFound)?;
             if matches!(
                 session.harness,
-                runtime::Kind::Cursor | runtime::Kind::Fx | runtime::Kind::OpenCode
+                runtime::Kind::Cursor
+                    | runtime::Kind::Fx
+                    | runtime::Kind::OpenCode
+                    | runtime::Kind::Hermes
             ) && session.reasoning.as_deref() != Some(reasoning)
             {
                 return Err(Error::Conflict("invalid reasoning effort"));
@@ -213,10 +219,10 @@ impl Manager {
                 let selected = model.ok_or(Error::Conflict("invalid model"))?;
                 self.reasoning_supported(kind, &selected, reasoning).await?
             }
-            runtime::Kind::Pi | runtime::Kind::Fx => {
-                runtime::PI_REASONING_LEVELS.contains(&reasoning)
-            }
+            runtime::Kind::Pi => runtime::pi_reasoning_accepted(reasoning),
+            runtime::Kind::Fx => runtime::PI_REASONING_LEVELS.contains(&reasoning),
             runtime::Kind::OpenCode => runtime::OPENCODE_REASONING_LEVELS.contains(&reasoning),
+            runtime::Kind::Hermes => runtime::HERMES_REASONING_LEVELS.contains(&reasoning),
         };
         if !supported {
             return Err(Error::Conflict("invalid reasoning effort"));

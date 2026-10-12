@@ -81,6 +81,7 @@ impl Config {
             "claude-code" => Kind::Claude,
             "fx" => Kind::Fx,
             "opencode" => Kind::OpenCode,
+            "hermes" => Kind::Hermes,
             _ => return Err(io::Error::other("unsupported CLOUDROOM_HARNESS")),
         };
         let account_home: PathBuf = required("CLOUDROOM_ACCOUNT_HOME")?.into();
@@ -173,6 +174,23 @@ impl Config {
                 HarnessConfig {
                     binary,
                     home: opencode_home,
+                    model: "default".into(),
+                    provider: None,
+                },
+            );
+        }
+        let hermes = [
+            account_home.join(".local/bin/hermes"),
+            PathBuf::from("/usr/local/bin/hermes"),
+        ]
+        .into_iter()
+        .find(|path| path.is_file());
+        if let Some(binary) = hermes.filter(|_| account_home.join(".hermes").is_dir()) {
+            harnesses.insert(
+                Kind::Hermes,
+                HarnessConfig {
+                    binary,
+                    home: account_home.join(".hermes"),
                     model: "default".into(),
                     provider: None,
                 },

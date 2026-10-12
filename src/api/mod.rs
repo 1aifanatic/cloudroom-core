@@ -74,6 +74,7 @@ pub fn router(manager: Arc<Manager>, token: String) -> Router {
         )
         .route("/v1/sessions", post(start).get(list_sessions))
         .route("/v1/sessions/{id}", get(status))
+        .route("/v1/sessions/{id}/requests/{request}", get(request_status))
         .route("/v1/sessions/{id}/workspace", get(session_workspace))
         .route("/v1/sessions/{id}/recovery", get(recovery))
         .route("/v1/sessions/{id}/prompts", post(prompt))
@@ -925,6 +926,28 @@ async fn status(
     Ok(Json(
         json!({"session":manager.session(&id).await?,"saving":manager.saving()}),
     ))
+}
+/// One request's state and whether its thread is archived, without the session's growing history.
+/// Cloud automations (ADR 0212) read it before each run: wait, count a failure, or stop.
+async fn request_status(
+    State(manager): State<Arc<Manager>>,
+    Path((id, request)): Path<(String, String)>,
+) -> Result<Json<Value>> {
+    key(&request)?;
+    let session = manager.session(&id).await?;
+    let receipt = session.receipts.get(&request);
+    // A queued prompt the user cancelled keeps its `accepted` receipt; it will never run.
+    let cancelled = !session.queue.contains(&request)
+        && session.receipts.values().any(|r| {
+            r.command == "cancel"
+                && matches!(r.state.as_str(), "accepted" | "completed")
+                && r.input["target_request_id"] == request.as_str()
+        });
+    Ok(Json(json!({
+        "archived": session.archived,
+        "state": receipt.map(|r| if cancelled && r.state == "accepted" { "cancelled" } else { r.state.as_str() }),
+        "error": receipt.and_then(|r| r.error.as_ref()),
+    })))
 }
 async fn recovery(
     State(manager): State<Arc<Manager>>,

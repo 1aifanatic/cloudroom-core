@@ -13,13 +13,14 @@ use serde_json::{Value, json};
 use std::{
     io::{self, Read},
     sync::Arc,
+    time::Duration,
 };
 
 const USAGE: &str = "cloudroom thread update --self --title TITLE
 cloudroom thread update --self --reasoning-level LEVEL
 cloudroom thread archive --self
 cloudroom thread stop --self
-cloudroom thread spawn --provider codex|claude-code|pi|opencode [--model MODEL] [--reasoning-level LEVEL] [--title TITLE] --prompt TEXT|--prompt-file PATH
+cloudroom thread spawn --provider codex|claude-code|pi|opencode|hermes [--model MODEL] [--reasoning-level LEVEL] [--title TITLE] --prompt TEXT|--prompt-file PATH
 cloudroom thread list [--include-archived]
 cloudroom thread output CHILD_ID
 cloudroom thread tell CHILD_ID TEXT
@@ -208,7 +209,7 @@ async fn spawn(
         .provider
         .map(|p| {
             serde_json::from_value(json!(p))
-                .map_err(|_| bad("Use --provider codex, claude-code, pi or opencode"))
+                .map_err(|_| bad("Use --provider codex, claude-code, pi, opencode or hermes"))
         })
         .transpose()?;
     let key = match input.request_id {
@@ -283,12 +284,56 @@ async fn tell(
     }
     let request =
         random_key().map_err(|e| fail(StatusCode::SERVICE_UNAVAILABLE, &e.to_string()))?;
+    match steer(&m, &id, &format!("{request}_steer"), &input.text)
+        .await
+        .as_deref()
+    {
+        Some("completed") => {
+            return Ok(Json(
+                json!({"id":id,"state":"steered","note":"Sent into the child's running turn. Cloudroom tells you when that turn finishes."}),
+            ));
+        }
+        Some(state) => {
+            return Ok(Json(
+                json!({"id":id,"state":state,"note":"Could not confirm the child's running turn got it. Check thread output before sending it again."}),
+            ));
+        }
+        None => {}
+    }
     let receipt = m
         .command(&id, request, "prompt", json!({"text":input.text}))
         .map_err(session_failure)?;
     Ok(Json(
         json!({"id":id,"state":receipt.state,"note":"Queued. Cloudroom tells you when the child finishes it."}),
     ))
+}
+
+/// Sends a busy child the message in its running turn, as in Local threads, so it never waits
+/// behind older messages. None means it was not delivered, so it can safely queue instead.
+async fn steer(m: &Arc<Manager>, id: &str, request: &str, text: &str) -> Option<String> {
+    let target = m
+        .local
+        .lock()
+        .unwrap()
+        .sessions
+        .get(id)?
+        .current_request
+        .clone()?;
+    let mut changed = m.subscribe();
+    let input = json!({"text":text,"target_request_id":target});
+    m.command(id, request.to_owned(), "steer", input).ok()?;
+    let settled = async {
+        loop {
+            let state = m.receipt(id, request).map(|r| r.state).unwrap_or_default();
+            if state != "accepted" || changed.changed().await.is_err() {
+                return state;
+            }
+        }
+    };
+    let state = tokio::time::timeout(Duration::from_secs(10), settled)
+        .await
+        .unwrap_or_else(|_| "accepted".into());
+    (state != "failed").then_some(state)
 }
 
 /// Stops the child's running turn and pauses its queue, like the app's stop button.

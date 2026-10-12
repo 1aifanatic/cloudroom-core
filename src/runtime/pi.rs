@@ -100,13 +100,15 @@ pub(super) async fn apply_thinking(handle: &Handle, reasoning: &str) -> io::Resu
     let supported = handle
         .call("get_available_thinking_levels", json!({}))
         .await?;
-    if !supported["levels"]
-        .as_array()
-        .is_some_and(|levels| levels.iter().any(|value| value == level))
-    {
+    let levels = supported["levels"].as_array().cloned().unwrap_or_default();
+    if !levels.iter().any(|value| value == level) {
+        let levels: Vec<&str> = levels.iter().filter_map(Value::as_str).collect();
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Pi model does not support the selected thinking level",
+            format!(
+                "Pi model does not support the selected thinking level; supported: {}",
+                levels.join(", ")
+            ),
         ));
     }
     handle
@@ -131,7 +133,7 @@ pub(super) async fn start(handle: &Handle) -> io::Result<String> {
         && let Some(level) = state["thinkingLevel"].as_str()
     {
         let stored = if level == "off" { "none" } else { level };
-        if stored == "none" || super::PI_REASONING_LEVELS.contains(&stored) {
+        if super::pi_reasoning_accepted(stored) {
             handle.remember_baseline(stored);
         }
     }
@@ -317,6 +319,8 @@ pub(super) struct Protocol {
     compaction: Option<u64>,
     accepted: bool,
     interrupting: bool,
+    /// The provider's reason for the last failed assistant message, shown to the user when the turn fails.
+    error: Option<String>,
     forking: bool,
     known_users: std::collections::HashSet<String>,
     close_mask: u8,
@@ -340,6 +344,7 @@ impl Protocol {
             compaction: None,
             accepted: false,
             interrupting: false,
+            error: None,
             forking: false,
             known_users: Default::default(),
             close_mask: 0,
@@ -355,6 +360,7 @@ impl Adapter for Protocol {
             self.prompt = Some(id);
             self.accepted = false;
             self.interrupting = false;
+            self.error = None;
         }
         if method == "abort" {
             self.interrupting = true;
@@ -544,7 +550,8 @@ impl Adapter for Protocol {
                     "unknown"
                 }
                 .to_owned();
-                events.extend(s.finished(&status, None));
+                let error = (status == "failed").then(|| self.error.take()).flatten();
+                events.extend(s.finished(&status, error));
             }
         }
         if t == "response"
@@ -574,6 +581,10 @@ impl Adapter for Protocol {
                 if !text.is_empty() {
                     s.last_text = text;
                 }
+                self.error = (v["message"]["stopReason"] == "error")
+                    .then(|| v["message"]["errorMessage"].as_str())
+                    .flatten()
+                    .map(str::to_owned);
                 if v["message"]["stopReason"] == "error"
                     && v["message"]["errorMessage"]
                         .as_str()

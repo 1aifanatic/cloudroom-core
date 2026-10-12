@@ -267,7 +267,8 @@ def cycle(config, connection, state_dir):
                     continue
                 left, right = local['files'].get(path), cloud['files'].get(path)
                 a, b, old = (left or {}).get('tag'), (right or {}).get('tag'), base.get(path)
-                push = tree.kind in MCP  # Mac to VM only: never edit the Mac's agent configuration.
+                # Mac to VM only: never edit the Mac's agent configuration or copy VM code that Pi would run on the Mac.
+                push = tree.kind in MCP or identity == 'extensions-pi'
                 if a == b:
                     base[path] = a
                     continue
