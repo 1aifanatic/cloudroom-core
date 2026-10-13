@@ -105,6 +105,16 @@ def directory(path, create=False):
         os.close(fd)
 
 
+def ignore_all(fd):
+    # Attachments and teleport copies in a project's .cloudroom folder must never reach its Git.
+    try:
+        file = os.open('.gitignore', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+    except OSError:
+        return
+    with os.fdopen(file, 'w') as output:
+        output.write('*\n')
+
+
 def safe_path(value):
     if not isinstance(value, str) or not value or '\\' in value or '\x00' in value:
         raise ValueError('invalid relative path')
@@ -112,6 +122,16 @@ def safe_path(value):
     if any(p in {'', '.', '..'} or p in EXCLUDED or p.startswith('.cloudroom-sync-') for p in parts):
         raise ValueError('excluded or invalid relative path')
     return parts
+
+
+def ignore_all(fd):
+    # Git skips Cloudroom's own folder in the project, so agents never commit pasted files.
+    try:
+        output = os.open('.gitignore', os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=fd)
+    except OSError:  # Already there, or a read-only folder: never block the upload.
+        return
+    with os.fdopen(output, 'w') as file:
+        file.write('*\n')
 
 
 def transfer(data, kind, executable, output=None, limit=MAX_FILE_BYTES):
@@ -150,7 +170,7 @@ class Tree:
         with directory(self.root, self.create) as root:
             fd = os.dup(root)
             try:
-                for part in parts[:-1]:
+                for index, part in enumerate(parts[:-1]):
                     if create:
                         try:
                             os.mkdir(part, mode=0o700, dir_fd=fd)
@@ -159,6 +179,8 @@ class Tree:
                     child = os.open(part, DIRECTORY, dir_fd=fd)
                     os.close(fd)
                     fd = child
+                    if create and index == 0 and part == '.cloudroom':
+                        ignore_all(fd)
                 yield fd, parts[-1]
             finally:
                 os.close(fd)
@@ -701,6 +723,24 @@ def worker():
         except FileNotFoundError:
             packages = []
         result = {'providers': sorted(providers), 'packages': packages if isinstance(packages, list) else []}
+    elif op == 'pi_packages':
+        # `pi install` saves only a package's source; the Mac's entry also keeps its resource filters.
+        if tree.filename != 'settings.json' or not isinstance(request['packages'], list):
+            raise ValueError('invalid Pi packages request')
+        mac = {entry['source']: entry for entry in request['packages'] if isinstance(entry, dict) and isinstance(entry.get('source'), str)}
+        try:
+            with tree.snapshot('settings.json') as (previous, data):
+                expected, current = previous['tag'], json.load(data)
+        except FileNotFoundError:
+            expected, current = None, {}
+        if not isinstance(current, dict) or not isinstance(current.get('packages', []), list):
+            raise ValueError('invalid Pi settings file')
+        source = lambda entry: entry if isinstance(entry, str) else entry.get('source') if isinstance(entry, dict) else None
+        packages = [mac.get(source(entry), entry) for entry in current.get('packages', [])]
+        if packages != current.get('packages', []):
+            data = json.dumps({**current, 'packages': packages}, indent=2).encode()
+            tree.apply('settings.json', expected, transfer(io.BytesIO(data), 'file', False), io.BytesIO(data))
+        result = {}
     elif op == 'apply':
         tree.apply(request['path'], request['expected'], request.get('entry'), sys.stdin.buffer)
         result = {}

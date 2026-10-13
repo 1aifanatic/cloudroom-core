@@ -4,6 +4,10 @@ use crate::workspace::storage::FRESH;
 
 /// How long work stays frozen before Cloudroom stops the command filling the disk.
 const RESCUE_AFTER: Duration = Duration::from_secs(30);
+/// History uploads wait this long for more records, so a busy session sends one file per half minute.
+const UPLOAD_AFTER: Duration = Duration::from_secs(30);
+/// ...unless this many records wait already.
+const UPLOAD_RECORDS: u64 = 1024;
 
 impl Manager {
     pub async fn check_storage(&self) -> Snapshot {
@@ -219,54 +223,137 @@ impl Manager {
         }
     }
 
+    /// Saves history in batches (ADR 0232): when the oldest unsaved record is 30 s old, 1,024 records wait, the
+    /// agents go idle, or a drain or stop asks. Failures back off up to a minute; the journal keeps everything.
     pub fn start_uploader(self: &Arc<Self>) {
+        if !self.history.saves_externally() {
+            return;
+        }
         let manager = self.clone();
         tokio::spawn(async move {
+            let (mut since, mut failures, mut retry_at) = (None::<Instant>, 0u32, Instant::now());
             loop {
-                let batch: io::Result<Vec<Record>> = {
-                    let local = manager.local.lock().unwrap();
-                    (local.journal.saved() + 1..=local.journal.last())
-                        .take(128)
-                        .map(|id| {
-                            serde_json::from_slice(&local.journal.read(id)?)
-                                .map_err(io::Error::other)
-                        })
-                        .collect()
+                let asked = tokio::select! {
+                    _ = manager.uploads.notified() => true,
+                    _ = tokio::time::sleep(Duration::from_secs(1)) => false,
                 };
-                match batch {
-                    Ok(batch) if !batch.is_empty() => {
-                        let started = Instant::now();
-                        let saved = manager.history.upload(&batch).await.is_ok();
-                        let mut local = manager.local.lock().unwrap();
-                        local.database_available = saved;
-                        let ack_failed = saved
-                            && local
-                                .journal
-                                .acknowledge(batch.last().unwrap().sequence)
-                                .is_err();
-                        manager.observability.record(Signal::HistoryUpload {
-                            records: batch.len(),
-                            pending_records: local.journal.last() - local.journal.saved(),
-                            success: saved,
-                            duration_ms: elapsed_ms(started),
-                        });
-                        if ack_failed {
-                            manager.observability.record(Signal::HistoryFault {
-                                operation: "acknowledge",
-                            });
-                            break;
-                        }
-                    }
+                let (pending, idle) = {
+                    let local = manager.local.lock().unwrap();
+                    let idle = local.sessions.values().all(|s| !s.busy());
+                    (local.journal.last() - local.journal.saved(), idle)
+                };
+                if pending == 0 {
+                    since = None;
+                    continue;
+                }
+                let waited = since.get_or_insert_with(Instant::now).elapsed();
+                let due = asked
+                    || pending >= UPLOAD_RECORDS
+                    || waited >= UPLOAD_AFTER
+                    || (idle && waited >= Duration::from_secs(2));
+                if !due || (!asked && Instant::now() < retry_at) {
+                    continue;
+                }
+                let batch = match manager.upload_batch() {
+                    Ok(batch) => batch,
                     Err(_) => {
                         manager.observability.record(Signal::HistoryFault {
                             operation: "read_pending",
                         });
                         break;
                     }
-                    _ => {}
+                };
+                let started = Instant::now();
+                let result = manager.history.upload(&batch).await;
+                let mut local = manager.local.lock().unwrap();
+                local.database_available = result.is_ok();
+                let ack_failed = result.is_ok()
+                    && local
+                        .journal
+                        .acknowledge(batch.last().unwrap().sequence)
+                        .is_err();
+                manager.observability.record(Signal::HistoryUpload {
+                    records: batch.len(),
+                    pending_records: local.journal.last() - local.journal.saved(),
+                    success: result.is_ok(),
+                    duration_ms: elapsed_ms(started),
+                });
+                drop(local);
+                if ack_failed {
+                    manager.observability.record(Signal::HistoryFault {
+                        operation: "acknowledge",
+                    });
+                    break;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                match result {
+                    Ok(()) => (since, failures) = (None, 0),
+                    Err(error) => {
+                        if matches!(error, history::ApiError::Conflict) {
+                            manager.observability.record(Signal::HistoryFault {
+                                operation: "conflict",
+                            });
+                        }
+                        failures += 1;
+                        // 1, 2, 4 ... 60 s, with up to a second of jitter so a fleet doesn't retry in step.
+                        let jitter = u64::from(started.elapsed().subsec_nanos() % 1000);
+                        retry_at = Instant::now()
+                            + Duration::from_secs(1u64 << failures.min(6))
+                                .min(Duration::from_secs(60))
+                            + Duration::from_millis(jitter);
+                    }
+                }
             }
         });
+    }
+
+    /// The next batch: the one a restart interrupted, exactly, or up to 4,096 records and 8 MB. Its end is saved before
+    /// it is sent, so a retry always resends the same files. Records are read without holding the session lock.
+    fn upload_batch(&self) -> io::Result<Vec<Record>> {
+        let (directory, saved, last, marked) = {
+            let local = self.local.lock().unwrap();
+            let journal = &local.journal;
+            (
+                journal.directory().to_owned(),
+                journal.saved(),
+                journal.last(),
+                journal.uploading(),
+            )
+        };
+        let (mut batch, mut bytes) = (Vec::new(), 0);
+        for id in saved + 1..=marked.unwrap_or(last) {
+            let raw = outbox::Journal::read_written(&directory, id)?;
+            bytes += raw.len();
+            batch.push(serde_json::from_slice::<Record>(&raw).map_err(io::Error::other)?);
+            if marked.is_none() && (batch.len() >= 4 * UPLOAD_RECORDS as usize || bytes >= 8 << 20)
+            {
+                break;
+            }
+        }
+        if marked.is_none()
+            && let Some(end) = batch.last().map(|r| r.sequence)
+        {
+            self.local.lock().unwrap().journal.begin_upload(end)?;
+        }
+        Ok(batch)
+    }
+
+    /// Uploads now and waits up to `wait` for every record to be saved. Returns how many are still pending.
+    pub async fn flush_history(&self, wait: Duration) -> u64 {
+        let deadline = Instant::now() + wait;
+        let mut asked_at = None::<Instant>;
+        loop {
+            let pending = {
+                let local = self.local.lock().unwrap();
+                local.journal.last() - local.journal.saved()
+            };
+            if pending == 0 || !self.history.saves_externally() || Instant::now() >= deadline {
+                return pending;
+            }
+            if asked_at.is_none_or(|at| at.elapsed() >= Duration::from_secs(2)) {
+                self.uploads.notify_one();
+                asked_at = Some(Instant::now());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 }

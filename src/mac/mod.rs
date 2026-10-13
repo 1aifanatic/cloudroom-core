@@ -18,7 +18,6 @@ use std::{
     convert::Infallible,
     fs, io,
     os::unix::{fs::FileTypeExt, fs::PermissionsExt, net::UnixStream as StdUnixStream},
-    path::PathBuf,
     process::Stdio,
     sync::{
         Arc, Mutex,
@@ -32,6 +31,8 @@ use tokio::{
     sync::{mpsc, watch},
 };
 use tokio_stream::wrappers::ReceiverStream;
+
+mod transfer;
 
 pub(crate) const SOCKET: &str = "/run/cloudroom/mac.sock";
 /// Raw bytes per stdin, stdout, or stderr. Hex doubles this on the wire.
@@ -429,6 +430,20 @@ async fn local_result(
     Ok(Json(result))
 }
 
+/// The caller has its result: free it now. Big copies confirm each piece, so they never pile up in memory.
+async fn local_forget(
+    State(m): State<Arc<Manager>>,
+    ConnectInfo(peer): ConnectInfo<Peer>,
+    RoutePath(id): RoutePath<String>,
+) -> Result<Json<Value>> {
+    local_auth(&m, peer)?;
+    let mut jobs = m.mac.jobs.lock().unwrap();
+    if jobs.get(&id).is_some_and(|job| job.result.is_some()) {
+        jobs.remove(&id);
+    }
+    Ok(Json(json!({"forgotten":true})))
+}
+
 async fn local_status(
     State(m): State<Arc<Manager>>,
     ConnectInfo(peer): ConnectInfo<Peer>,
@@ -453,7 +468,7 @@ pub async fn listen(manager: &Arc<Manager>) -> io::Result<()> {
     fs::set_permissions(&path, fs::Permissions::from_mode(0o666))?;
     let app = Router::new()
         .route("/jobs", post(local_run))
-        .route("/jobs/{id}", get(local_result))
+        .route("/jobs/{id}", get(local_result).delete(local_forget))
         .route("/status", get(local_status))
         .merge(crate::secrets::agent_routes())
         .merge(crate::session::thread::agent_routes())
@@ -626,17 +641,6 @@ fn finished(value: Value) -> io::Result<(Option<i32>, Vec<u8>, Vec<u8>)> {
     ))
 }
 
-async fn copy(socket: &str, command: String, stdin: Vec<u8>, write: bool) -> io::Result<Vec<u8>> {
-    let body = json!({"command":command,"stdin":hex(&stdin),"write":write});
-    let (code, stdout, stderr) = finished(request(socket, "POST", "/jobs", Some(body)).await?)?;
-    if code != Some(0) {
-        return Err(io::Error::other(
-            String::from_utf8_lossy(&stderr).into_owned(),
-        ));
-    }
-    Ok(stdout)
-}
-
 /// Returns the process exit code.
 pub async fn cli(args: &[String]) -> io::Result<i32> {
     let mut args = args.to_vec();
@@ -686,62 +690,10 @@ other commands run read-only, and --write needs their approval.";
             Ok(0)
         }
         ("pull", [source, rest @ ..]) if rest.len() <= 1 => {
-            let target = PathBuf::from(rest.first().map_or(".", String::as_str));
-            let archive = copy(&socket, format!(
-                "p={}; cd -- \"$(dirname -- \"$p\")\" && COPYFILE_DISABLE=1 tar --no-xattrs -czf - -- \"$(basename -- \"$p\")\"",
-                quote(source)), Vec::new(), false).await?;
-            fs::create_dir_all(&target)?;
-            let mut tar = tokio::process::Command::new("tar")
-                .arg("-xzf")
-                .arg("-")
-                .arg("-C")
-                .arg(&target)
-                .stdin(Stdio::piped())
-                .spawn()?;
-            tar.stdin.take().unwrap().write_all(&archive).await?;
-            if !tar.wait().await?.success() {
-                return Err(io::Error::other("Could not unpack the copied files"));
-            }
-            println!("{}", json!({"copied":source,"to":target}));
-            Ok(0)
+            transfer::pull(&socket, source, rest.first().map_or(".", String::as_str)).await
         }
         ("push", [source, rest @ ..]) if rest.len() <= 1 => {
-            let path = PathBuf::from(source);
-            let (Some(parent), Some(file)) = (path.parent(), path.file_name()) else {
-                return Err(io::Error::other("push needs a file or folder path"));
-            };
-            let parent = if parent.as_os_str().is_empty() {
-                PathBuf::from(".")
-            } else {
-                parent.to_owned()
-            };
-            let archive = tokio::process::Command::new("tar")
-                .arg("-czf")
-                .arg("-")
-                .arg("-C")
-                .arg(parent)
-                .arg("--")
-                .arg(file)
-                .output()
-                .await?;
-            if !archive.status.success() || archive.stdout.len() > LIMIT {
-                return Err(io::Error::other(
-                    "Could not pack the files; the compressed limit is 16 MiB",
-                ));
-            }
-            let target = rest.first().map_or("~", String::as_str);
-            copy(
-                &socket,
-                format!(
-                    "d={}; mkdir -p -- \"$d\" && tar -xzf - -C \"$d\"",
-                    quote(target)
-                ),
-                archive.stdout,
-                true,
-            )
-            .await?;
-            println!("{}", json!({"copied":source,"to":target}));
-            Ok(0)
+            transfer::push(&socket, source, rest.first().map_or("~", String::as_str)).await
         }
         _ => {
             println!("{usage}");

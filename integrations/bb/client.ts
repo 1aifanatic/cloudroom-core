@@ -542,6 +542,11 @@ export class CloudroomClient {
     return { providers: value.providers };
   }
 
+  /** Saves the Mac's custom Pi providers on the VM and installs its packages, which can take minutes. */
+  async piSetup(setup: { providers: Record<string, unknown>; packages: unknown[] }, signal?: AbortSignal): Promise<void> {
+    await this.#json("/v1/accounts/pi/setup", setup as Json, signal, undefined, 600_000);
+  }
+
   async cursorAuth(action?: "login" | "cancel" | "key", id?: string, apiKey?: string, signal?: AbortSignal): Promise<CodexAuthStatus> {
     const value = await this.#json(`/v1/accounts/cursor${action ? `/${action}` : ""}`, action ? { request_id: requestId(id ?? ""), ...(action === "key" ? { api_key: apiKey } : {}) } : undefined, signal);
     if (!["missing", "waiting", "connected", "limited", "unavailable", "error", "expired"].includes(String(value.state))) throw new CloudroomError("Invalid Cursor account status");

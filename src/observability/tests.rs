@@ -45,16 +45,15 @@ fn local_rotation_preserves_the_previous_file_with_private_permissions() {
 }
 
 #[tokio::test]
-async fn database_outage_keeps_local_diagnostics_and_overload_is_visible() {
+async fn api_outage_keeps_local_diagnostics_and_overload_is_visible() {
     let directory = Directory::new();
     let config = Config {
         listen: "127.0.0.1:0".parse().unwrap(),
         token: String::new(),
         state_dir: directory.0.clone(),
         repository: directory.0.clone(),
-        database_url: "postgres://127.0.0.1:1/test".into(),
+        api_url: Some("http://127.0.0.1:1".into()),
         store: "test".into(),
-        allow_insecure_database: true,
         instance: None,
         account_home: directory.0.clone(),
         default_harness: crate::runtime::Kind::Codex,
@@ -72,10 +71,9 @@ async fn database_outage_keeps_local_diagnostics_and_overload_is_visible() {
         rpc_timeout: Duration::from_secs(30),
         diagnostic_upload: Duration::from_secs(1),
     };
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .connect_lazy(&config.database_url)
-        .unwrap();
-    let diagnostics = Observability::start(&config, pool, metrics::AgentCounts::default);
+    // Nothing listens on port 1: every upload fails, as in an outage.
+    let api = crate::session::history::History::new(&config).unwrap().api;
+    let diagnostics = Observability::start(&config, api, metrics::AgentCounts::default);
     // No await: the producer must neither block nor allocate an unbounded queue.
     for _ in 0..CAPACITY * 2 {
         diagnostics.record(Signal::HistoryFault { operation: "test" });

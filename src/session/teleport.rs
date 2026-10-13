@@ -405,7 +405,7 @@ impl Manager {
             .history
             .summary(&Self::transfer_session(&manifest.request_id), None)
             .await
-            .map_err(|e| Error::Storage(format!("history database: {e}")))?
+            .map_err(|e| Error::Storage(format!("saved history: {e}")))?
             .0
             .is_some()
         {

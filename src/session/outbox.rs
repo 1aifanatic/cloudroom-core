@@ -5,12 +5,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Append-only durable records. Database acknowledgement is separate from local acceptance.
+/// Append-only durable records. External acknowledgement is separate from local acceptance.
 /// A single service owns this directory; incomplete temporary writes are never replayed.
 pub struct Journal {
     directory: PathBuf,
     next: u64,
     saved: u64,
+    /// The last record of the batch being uploaded. Saved before sending, so a restart resends the exact same batch.
+    uploading: Option<u64>,
     writable: bool,
     _lock: File,
 }
@@ -61,10 +63,15 @@ impl Journal {
         if saved > last {
             return Err(io::Error::other("saved cursor exceeds journal"));
         }
+        let uploading = fs::read_to_string(directory.join("uploading"))
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|end| *end > saved && *end <= last);
         Ok(Self {
             directory: directory.into(),
             next: last + 1,
             saved,
+            uploading,
             writable: true,
             _lock: lock,
         })
@@ -128,6 +135,28 @@ impl Journal {
         fs::read(self.directory.join(record_name(id)))
     }
 
+    /// Reads a record already written, without holding whoever owns the journal: records never change.
+    pub fn read_written(directory: &Path, id: u64) -> io::Result<Vec<u8>> {
+        fs::read(directory.join(record_name(id)))
+    }
+
+    pub fn directory(&self) -> &Path {
+        &self.directory
+    }
+
+    pub fn uploading(&self) -> Option<u64> {
+        self.uploading.filter(|end| *end > self.saved)
+    }
+
+    pub fn begin_upload(&mut self, end: u64) -> io::Result<()> {
+        if end <= self.saved || end >= self.next {
+            return Err(io::Error::other("invalid upload batch"));
+        }
+        self.write_atomic("uploading", end.to_string().as_bytes())?;
+        self.uploading = Some(end);
+        Ok(())
+    }
+
     pub fn writable(&self) -> bool {
         self.writable
     }
@@ -139,7 +168,7 @@ impl Journal {
         self.saved
     }
 
-    /// Called only after PostgreSQL confirms the complete prefix was committed.
+    /// Called only after the API confirms the complete prefix was saved.
     pub fn acknowledge(&mut self, id: u64) -> io::Result<()> {
         if id < self.saved || id >= self.next {
             return Err(io::Error::other("invalid acknowledgement"));

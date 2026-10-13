@@ -2,7 +2,7 @@
 # Install Cloudroom core on a fresh Ubuntu 24.04 VM from a CI-tested release (docs/setup.md).
 #   curl -fsSL https://raw.githubusercontent.com/davidondrej/cloudroom-core/main/install/install.sh -o install.sh
 #   sudo bash install.sh [--version X.Y.Z]
-# The PostgreSQL URL comes from CLOUDROOM_DATABASE_URL or a hidden prompt, never from arguments.
+# History stays in the local journal (ADR 0237). To save it elsewhere, set CLOUDROOM_API_URL to a compatible server.
 set -euo pipefail
 
 REPO=davidondrej/cloudroom-core
@@ -26,27 +26,12 @@ command -v systemctl >/dev/null || fail 'systemd is required'
 . /etc/os-release
 [ "${ID:-}" = ubuntu ] && [ "${VERSION_ID:-}" = 24.04 ] || echo "Warning: only Ubuntu 24.04 is tested; this is ${PRETTY_NAME:-unknown}." >&2
 
-db=${CLOUDROOM_DATABASE_URL:-}
-if [ -z "$db" ]; then
-  [ -r /dev/tty ] || fail 'set CLOUDROOM_DATABASE_URL or run this in a terminal'
-  echo 'PostgreSQL URL for a dedicated database, such as postgresql://USER:PASSWORD@HOST/DB (HOST 127.0.0.1 for one on this machine)' >&2
-  read -rsp 'URL (input hidden): ' db </dev/tty
-  echo >&2
-fi
-case $db in postgres://* | postgresql://*) ;; *) fail 'expected a postgresql:// URL' ;; esac
-[[ $db != *[[:space:]\"\\\$\`]* ]] || fail 'the URL must not contain spaces, quotes, $ or backslashes; URL-encode them'
-# A database on this machine is reached over loopback without TLS; any other host needs verified TLS.
-host=${db#*://}; host=${host##*@}; host=${host%%[/?]*}
-[[ $host == *] ]] || host=${host%:*}
-case $host in 127.0.0.1 | localhost | '[::1]') local_db=1 ;; *) local_db='' ;; esac
-if [ -z "$local_db" ] && [[ $db != *sslrootcert=* ]]; then
-  # The core always verifies TLS. Default to the system trust store for publicly trusted certificates.
-  [[ $db == *\?* ]] && db="$db&sslrootcert=/etc/ssl/certs/ca-certificates.crt" || db="$db?sslrootcert=/etc/ssl/certs/ca-certificates.crt"
-fi
+api=${CLOUDROOM_API_URL:-}
+[ -z "$api" ] || [[ $api =~ ^https://[A-Za-z0-9.:/_-]+[A-Za-z0-9_-]$ ]] || fail 'CLOUDROOM_API_URL must be an https:// URL without a trailing slash'
 
 echo 'Installing packages...'
 apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl git ca-certificates python3 postgresql-client openssl >/dev/null
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl git ca-certificates python3 openssl >/dev/null
 
 echo 'Downloading the release...'
 stage=$(mktemp -d)
@@ -88,11 +73,10 @@ agent_home=$(getent passwd cloudroom-agent | cut -d: -f6)
 chmod 700 /var/lib/cloudroom "$agent_home"
 install -d -m 700 -o cloudroom -g cloudroom /var/lib/cloudroom/history
 install -d -m 750 -o root -g cloudroom $ETC
-install -d -m 755 $LIB $LIB/sql
+install -d -m 755 $LIB
 install -d -m 700 -o cloudroom-agent -g cloudroom-agent /code
 install -m 755 "$stage/cloudroom" $LIB/cloudroom
 install -m 755 "$stage/install/configure.py" $LIB/configure.py
-install -m 644 "$stage"/sql/*.sql $LIB/sql/
 install -m 644 "$stage/install/cloudroom.service" /etc/systemd/system/cloudroom.service
 
 echo 'Writing configuration...'
@@ -104,11 +88,10 @@ token=$(openssl rand -hex 32)
 CLOUDROOM_TOKEN=$token
 CLOUDROOM_LISTEN=127.0.0.1:9840
 CLOUDROOM_STORE=self-hosted
-CLOUDROOM_DATABASE_URL="$db"
 CLOUDROOM_STATE_DIR=/var/lib/cloudroom/history
 CLOUDROOM_ACCOUNT_HOME=$agent_home
 EOF
-  [ -z "$local_db" ] || echo 'CLOUDROOM_ALLOW_INSECURE_DATABASE=1' >> $ETC/core.env
+  if [ -n "$api" ]; then echo "CLOUDROOM_API_URL=$api" >> $ETC/core.env; else echo 'CLOUDROOM_LOCAL_HISTORY=1' >> $ETC/core.env; fi
 )
 chown cloudroom:cloudroom $ETC/core.env
 python3 $LIB/configure.py --storage-only $ETC
@@ -128,12 +111,8 @@ cat <<EOF
 Cloudroom core $("$LIB/cloudroom" --version | cut -d' ' -f2) is running on 127.0.0.1:9840.
 The API token is in $ETC/core.env (readable by root only).
 
-Two steps remain:
-1. Apply the database schema once, as the database owner:
-   psql 'YOUR_DATABASE_URL' -v ON_ERROR_STOP=1 -f $LIB/sql/0001-session-records.sql -f $LIB/sql/0002-diagnostics.sql
-   If your provider uses its own CA certificate, copy it to $ETC/database-ca.crt and set
-   sslrootcert=$ETC/database-ca.crt in the URL in $ETC/core.env.
-2. Install a harness and sign in as the cloudroom-agent account (docs/setup.md, docs/harnesses.md).
+One step remains:
+Install a harness and sign in as the cloudroom-agent account (docs/setup.md, docs/harnesses.md).
    For Codex or Pi, add its settings to $ETC/core.env. Then run: sudo systemctl restart cloudroom
 
 Run your first task: docs/setup.md#5-run-your-first-task

@@ -118,16 +118,16 @@ impl Workload {
     /// Idle sleep treats processes beyond the launch count as background jobs. Codex starts its code-mode
     /// host on the first command and keeps it for the session, so it is harness, not a background job.
     pub fn process_count(&self) -> Option<usize> {
-        let helper = |pid: &i32| {
-            fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| {
-                let program = cmdline.split(|b| *b == 0).next().unwrap_or_default();
-                program.rsplit(|b| *b == b'/').next() == Some(b"codex-code-mode-host".as_slice())
-            })
-        };
-        Some(self.pids().ok()?.iter().filter(|pid| !helper(pid)).count())
+        Some(
+            self.pids()
+                .ok()?
+                .iter()
+                .filter(|pid| !helper(**pid))
+                .count(),
+        )
     }
     /// Kills the process group, other than the harness's own, that wrote the most to disk: a tool command,
-    /// never the harness or the helpers it did not detach. The youngest group wins when write counts are
+    /// never the harness or its helpers. The youngest group wins when write counts are
     /// unreadable. Returns the heaviest writer's command line, or None when nothing but the harness remains.
     pub fn kill_top_writer(&self, harness: u32) -> io::Result<Option<String>> {
         let pids = self.pids()?;
@@ -137,6 +137,7 @@ impl Workload {
             if let Some((group, started)) = stat(pid)
                 && pid != harness as i32
                 && Some(group) != own_group
+                && !helper(pid)
             {
                 groups
                     .entry(group)
@@ -270,6 +271,13 @@ fn members(id: Option<&str>) -> io::Result<Vec<Member>> {
         }
     }
     Ok(found)
+}
+/// Codex's code-mode host runs in its own group but holds session state, so it counts as harness.
+fn helper(pid: i32) -> bool {
+    fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|cmdline| {
+        let program = cmdline.split(|b| *b == 0).next().unwrap_or_default();
+        program.rsplit(|b| *b == b'/').next() == Some(b"codex-code-mode-host".as_slice())
+    })
 }
 /// A process's group and start time, from `/proc/PID/stat`.
 fn stat(pid: i32) -> Option<(i32, u64)> {

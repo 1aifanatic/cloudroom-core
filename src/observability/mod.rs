@@ -9,7 +9,6 @@ use crate::{
 };
 use serde::Serialize;
 use serde_json::{Value, json};
-use sqlx::PgPool;
 use std::{
     collections::{BTreeMap, VecDeque, hash_map::RandomState},
     fs::{self, OpenOptions},
@@ -30,7 +29,6 @@ const LOCAL_BYTES: u64 = 8 * 1024 * 1024;
 const SUMMARY_INTERVAL: Duration = Duration::from_secs(60);
 const CPU_INTERVAL: Duration = Duration::from_secs(60);
 const SLOW_API_MS: u64 = 1000;
-const PRUNE_BATCH: i64 = 1000;
 const STDERR_CAPACITY: usize = 32;
 const STDERR_BATCH: usize = 8;
 const STDERR_FILE_BYTES: u64 = 1024 * 1024;
@@ -135,7 +133,6 @@ pub(crate) struct Observability {
     stop: watch::Sender<bool>,
     finished: watch::Receiver<bool>,
     resources: watch::Sender<(Option<u64>, Value)>,
-    pub metrics: Arc<metrics::History>,
 }
 
 pub(crate) fn now_ms() -> u64 {
@@ -152,7 +149,7 @@ pub(crate) fn elapsed_ms(start: Instant) -> u64 {
 impl Observability {
     pub fn start(
         config: &Config,
-        pool: PgPool,
+        api: Option<crate::session::history::Api>,
         agents: impl Fn() -> metrics::AgentCounts + Send + 'static,
     ) -> Self {
         let (sender, receiver) = mpsc::channel(CAPACITY);
@@ -177,17 +174,12 @@ impl Observability {
             stop,
             finished,
             resources: watch::channel((None, json!({"cpu":null,"memory":null,"disk":null}))).0,
-            metrics: Arc::new(metrics::History::new(
-                pool.clone(),
-                config.store.clone(),
-                config.instance.clone(),
-            )),
         };
         let config = config.clone();
         let worker = this.clone();
         tokio::spawn(async move {
             worker
-                .run(config, pool, receiver, captures, stopping, agents)
+                .run(config, api, receiver, captures, stopping, agents)
                 .await;
             done.send_replace(true);
         });
@@ -260,7 +252,7 @@ impl Observability {
     async fn run(
         &self,
         config: Config,
-        pool: PgPool,
+        api: Option<crate::session::history::Api>,
         mut receiver: mpsc::Receiver<Record>,
         mut captures: mpsc::Receiver<LocalStderr>,
         mut stop: watch::Receiver<bool>,
@@ -271,10 +263,9 @@ impl Observability {
         let mut pending = VecDeque::new();
         let mut sampler = system::Sampler::default();
         let mut sample_at = Instant::now();
-        let (mut cpu_at, mut busy) = (Instant::now(), false);
+        let (mut cpu_at, mut cpu_since_ms, mut busy) = (Instant::now(), now_ms(), false);
         let mut summaries = BTreeMap::new();
         let mut summary_at = Instant::now() + SUMMARY_INTERVAL;
-        let mut prune_at = Instant::now();
         let mut upload_at = Instant::now() + config.diagnostic_upload;
         let (mut local_write_failures, mut upload_failures) = (0, 0);
         loop {
@@ -296,10 +287,12 @@ impl Observability {
             if !stopping && Instant::now() >= sample_at {
                 let mut resources = sampler.sample(&config).await;
                 let counts = agents();
-                busy |= counts.working > 0 || counts.queued > 0;
+                busy |= counts.working > 0
+                    || counts.queued > 0
+                    || counts.last_activity.is_some_and(|at| at >= cpu_since_ms);
                 if Instant::now() >= cpu_at {
                     resources.cpu_minute = sampler.minute(busy);
-                    (cpu_at, busy) = (Instant::now() + CPU_INTERVAL, false);
+                    (cpu_at, cpu_since_ms, busy) = (Instant::now() + CPU_INTERVAL, now_ms(), false);
                 }
                 resources.agents = Some(counts);
                 self.resources
@@ -392,27 +385,27 @@ impl Observability {
                     eprintln!("Cloudroom private harness diagnostic write failed");
                 }
             }
-            // Finish bounded local batches before spending the shutdown budget on PostgreSQL.
+            // Finish bounded local batches before spending the shutdown budget on the upload.
             if stopping && !captures.is_empty() {
                 continue;
             }
-            // Batched, so hundreds of idle cores (e.g. hot spares answering capability checks)
-            // don't each keep a connection to the shared database open.
+            // Batched, so hundreds of idle cores (e.g. hot spares answering capability checks) cost the website
+            // little. The website prunes them after 7 days. Without an API they stay in the local files only.
             if !pending.is_empty() && (stopping || Instant::now() >= upload_at) {
                 upload_at = Instant::now() + config.diagnostic_upload;
-                let payload = serde_json::to_string(&pending).expect("diagnostic serialization");
-                let upload = sqlx::query(
-                    "INSERT INTO cloudroom_diagnostics (store, run_id, sequence, timestamp_ms, record) \
-                     SELECT $1, value->>'run_id', (value->>'sequence')::bigint, (value->>'timestamp_ms')::bigint, value \
-                     FROM jsonb_array_elements($2::jsonb) ON CONFLICT (store, run_id, sequence) DO NOTHING")
-                    .bind(&config.store).bind(payload).execute(&pool);
-                if matches!(
-                    tokio::time::timeout(Duration::from_secs(2), upload).await,
-                    Ok(Ok(_))
-                ) {
+                let Some(api) = &api else {
                     pending.clear();
-                } else {
-                    upload_failures += 1;
+                    continue;
+                };
+                let payload = serde_json::to_value(&pending).expect("diagnostic serialization");
+                match tokio::time::timeout(
+                    Duration::from_secs(10),
+                    api.post("diagnostics", &payload),
+                )
+                .await
+                {
+                    Ok(Ok(_)) => pending.clear(),
+                    _ => upload_failures += 1,
                 }
             }
             if stopping {
@@ -420,25 +413,6 @@ impl Observability {
             }
             if *stop.borrow() {
                 continue;
-            }
-            if Instant::now() >= prune_at {
-                // Scope retention to this store; never touch session history or another owner.
-                // Every kind, resource samples included, lives 7 days: one index range, no row-by-row filter.
-                let prune = sqlx::query(
-                    "DELETE FROM cloudroom_diagnostics WHERE store=$1 AND ctid IN (\
-                     SELECT ctid FROM cloudroom_diagnostics WHERE store=$1 \
-                     AND timestamp_ms < (extract(epoch FROM now() - interval '7 days') * 1000)::bigint \
-                     ORDER BY timestamp_ms LIMIT $2)")
-                    .bind(&config.store).bind(PRUNE_BATCH).execute(&pool);
-                let delay = match tokio::time::timeout(Duration::from_secs(2), prune).await {
-                    Ok(Ok(result)) if result.rows_affected() == PRUNE_BATCH as u64 => 1,
-                    Ok(Ok(_)) => 3600,
-                    _ => {
-                        upload_failures += 1;
-                        60
-                    }
-                };
-                prune_at = Instant::now() + Duration::from_secs(delay);
             }
         }
     }

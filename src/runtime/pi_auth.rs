@@ -166,6 +166,17 @@ fn remote_package(value: &Value) -> Option<String> {
     .then(|| source.to_owned())
 }
 
+/// The Mac's package entries with resource filters, such as turned-off extensions.
+pub(crate) fn filtered(value: &Value) -> Vec<Value> {
+    value["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry.is_object() && remote_package(entry).is_some())
+        .cloned()
+        .collect()
+}
+
 /// Saves the Mac's custom providers (Mac wins per provider) and returns packages the VM still needs.
 pub(crate) async fn setup(
     config: &Config,
@@ -212,8 +223,14 @@ pub(crate) async fn setup(
     ))
 }
 
-/// Installs packages one at a time with the VM's own Pi, the same as `pi install` in a terminal.
-pub(crate) async fn install(config: &Config, storage: &Guard, packages: Vec<String>) {
+/// Installs packages one at a time with the VM's own Pi, the same as `pi install` in a terminal,
+/// then puts back the Mac's resource filters, which `pi install` does not save.
+pub(crate) async fn install(
+    config: &Config,
+    storage: &Guard,
+    packages: Vec<String>,
+    filtered: Vec<Value>,
+) {
     static RUNNING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
     let _running = RUNNING.lock().await;
     let Ok(profile) = profile(config) else { return };
@@ -242,6 +259,12 @@ pub(crate) async fn install(config: &Config, storage: &Guard, packages: Vec<Stri
         .await;
         if let Err(error) = installed {
             eprintln!("Pi package install failed for {source}: {error}");
+        }
+    }
+    if !filtered.is_empty() {
+        let request = json!({"op":"pi_packages","packages":filtered});
+        if let Err(error) = helper(config, storage, "settings.json", request).await {
+            eprintln!("Pi package filters failed: {error}");
         }
     }
 }

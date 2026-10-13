@@ -191,6 +191,14 @@ def pi_file(home, name):
         return b''
 
 
+def pi_setup(home):
+    """The Mac's custom Pi providers, with keys as the Mac sees them, and packages (ADR 0130). Cloud sandboxes get them at Pi start."""
+    models, settings = (json.loads(raw) if raw else {} for raw in (pi_file(home, 'models.json'), pi_file(home, 'settings.json')))
+    providers = models.get('providers') if isinstance(models, dict) and isinstance(models.get('providers'), dict) else {}
+    packages = settings.get('packages') if isinstance(settings, dict) and isinstance(settings.get('packages'), list) else []
+    return {'providers': {name: portable_provider(value) for name, value in providers.items() if isinstance(value, dict)}, 'packages': packages}
+
+
 def import_pi(config, connection, folder):
     """Copy Pi logins the VM lacks, custom providers, and packages (ADR 0130). VM logins always win."""
     if not config.get('copyLogins'):
@@ -222,11 +230,9 @@ def import_pi(config, connection, folder):
         if entry.get('key', True):
             missing[name] = entry
     result = remote.json('/v1/accounts/pi/import', missing) if missing else {'providers': sorted(saved), 'added': []}
-    providers = models.get('providers') if isinstance(models.get('providers'), dict) else {}
-    packages = settings.get('packages') if isinstance(settings.get('packages'), list) else []
-    if capabilities.get('pi_setup') and (providers or packages):
-        providers = {name: portable_provider(value) for name, value in providers.items() if isinstance(value, dict)}
-        result['setup'] = remote.json('/v1/accounts/pi/setup', {'providers': providers, 'packages': packages})
+    setup = pi_setup(home)
+    if capabilities.get('pi_setup') and (setup['providers'] or setup['packages']):
+        result['setup'] = remote.json('/v1/accounts/pi/setup', setup)
     atomic_json(receipt, attempt)
     return result
 
@@ -426,7 +432,7 @@ def configure(folder, connection_file, activate=True, copy_logins=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=['configure', 'run', 'once', 'auth', 'pi-auth', 'status', 'stop'])
+    parser.add_argument('command', choices=['configure', 'run', 'once', 'auth', 'pi-auth', 'pi-setup', 'status', 'stop'])
     parser.add_argument('directory', type=Path)
     parser.add_argument('--connection', type=Path)
     parser.add_argument('--no-start', action='store_true', help='Prepare configuration without installing a background job')
@@ -441,6 +447,8 @@ def main():
         config = private_json(config_path) if config_path.exists() else {}
         connection = load_connection(config) if config else private_json(args.connection)
         result = (import_codex if args.command == 'auth' else import_pi)(config, connection, args.directory)
+    elif args.command == 'pi-setup':
+        result = pi_setup(os.environ.get('PI_CODING_AGENT_DIR') or Path.home() / '.pi/agent')
     elif args.command == 'stop':
         launch(args.directory.resolve(), stop=True)
         result = {'state': 'offline'}

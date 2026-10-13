@@ -156,6 +156,7 @@ impl Local {
                 "failed" => counts.failed += 1,
                 _ => {}
             }
+            counts.last_activity = counts.last_activity.max(session.last_activity);
         }
         counts
     }

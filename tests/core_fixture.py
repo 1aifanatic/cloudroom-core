@@ -220,12 +220,12 @@ class ReplayTests(unittest.TestCase):
         (home / ".codex").mkdir(parents=True)
         self.state = self.root / "state"
         self.state.mkdir()
-        # The database is a missing socket: it fails at once, where a refused port is retried for 2s on every shutdown.
+        # History stays in the journal unless a test starts the fake API (WorkspaceTests.api).
         self.env = {
             "PATH": "/usr/local/bin:/usr/bin:/bin", "CLOUDROOM_UNPROTECTED_TEST_MODE": "1", "CLOUDROOM_LISTEN": "127.0.0.1:0",
             "CLOUDROOM_TOKEN": "fixture-token-" + "x" * 32, "CLOUDROOM_STATE_DIR": str(self.state),
-            "CLOUDROOM_REPOSITORY": str(self.repo), "CLOUDROOM_DATABASE_URL": f"postgres://localhost/fixture?host={self.root}/no-database",
-            "CLOUDROOM_STORE": "fixture", "CLOUDROOM_ALLOW_INSECURE_DATABASE": "1",
+            "CLOUDROOM_REPOSITORY": str(self.repo), "CLOUDROOM_LOCAL_HISTORY": "1",
+            "CLOUDROOM_STORE": "fixture",
             "CLOUDROOM_CODEX_BINARY": str(Path(__file__).resolve()), "CLOUDROOM_ACCOUNT_HOME": str(home),
             "CLOUDROOM_CODEX_HOME": str(home / ".codex"), "CLOUDROOM_MODEL": "fixture",
         }
@@ -250,7 +250,7 @@ class ReplayTests(unittest.TestCase):
 
     def test_codex_login_is_private_idempotent_cancellable_and_verified(self):
         from workspaces import WorkspaceTests
-        WorkspaceTests.database(self)
+        WorkspaceTests.api(self)
         (self.repo / 'auth-state').write_text('missing')
         self.start()
         api = self.service.request
@@ -500,7 +500,7 @@ class ReplayTests(unittest.TestCase):
         shutil.rmtree(self.repo / ".git")
         assert self.service.request("GET", path) == {"path": str(self.repo), "branch": None, "head": None}
 
-    def test_core_boots_before_agent_setup_and_does_not_fake_database_readiness(self):
+    def test_core_boots_before_agent_setup(self):
         for key in ['CLOUDROOM_CODEX_BINARY', 'CLOUDROOM_CODEX_HOME', 'CLOUDROOM_MODEL', 'CLOUDROOM_REPOSITORY']:
             self.env.pop(key)
         self.start()
@@ -508,7 +508,8 @@ class ReplayTests(unittest.TestCase):
         self.assertFalse(data['runtime']['configured'])
         self.assertEqual(data['sessions'], [])
         self.service.request('GET', '/v1/ready', expected=401, token=None)
-        self.assertFalse(self.service.request('GET', '/v1/ready', expected=503)['ready'])
+        # Ready means Core can record: saved history catches up on its own.
+        self.assertTrue(self.service.request('GET', '/v1/ready')['ready'])
         error = self.service.request('POST', '/v1/sessions', {'request_id': 'not-configured'}, 409)
         self.assertIn('setup is incomplete', error['error'])
 
@@ -722,7 +723,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_journal_failure_is_unhealthy_until_explicit_recovery(self):
         from workspaces import WorkspaceTests
-        WorkspaceTests.database(self)
+        WorkspaceTests.api(self)
         self.seed(); self.start(); self.ready()
         self.wait(lambda:self.service.request('GET','/v1/health')['saving']['pending_records']==0,'saved baseline')
         self.assertTrue(self.service.request('GET','/v1/ready')['ready'])

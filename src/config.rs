@@ -16,9 +16,10 @@ pub struct Config {
     pub token: String,
     pub state_dir: PathBuf,
     pub repository: PathBuf,
-    pub database_url: String,
+    /// Where Core saves history, diagnostics, and feedback (ADR 0232): Cloudroom's website or a compatible server.
+    /// None keeps history only in this machine's journal (`CLOUDROOM_LOCAL_HISTORY=1`, ADR 0237).
+    pub api_url: Option<String>,
     pub store: String,
-    pub allow_insecure_database: bool,
     /// Optional host label, such as a sandbox name, that prefixes this process's diagnostic run IDs.
     pub instance: Option<String>,
     pub account_home: PathBuf,
@@ -27,7 +28,7 @@ pub struct Config {
     pub storage: Option<crate::workspace::storage::Policy>,
     /// Harness RPC deadline; startup allows four times as long.
     pub rpc_timeout: Duration,
-    /// How often diagnostics reach PostgreSQL. Long, so idle cores don't hold a shared database connection.
+    /// How often diagnostics are uploaded. Long, so hundreds of idle cores cost the website little.
     pub diagnostic_upload: Duration,
 }
 
@@ -199,7 +200,7 @@ impl Config {
         Ok(Self {
             storage,
             rpc_timeout,
-            // Unprotected tests check the database within seconds.
+            // Unprotected tests check uploads within seconds.
             diagnostic_upload: Duration::from_secs(if unprotected_test_mode { 1 } else { 300 }),
             default_harness,
             harnesses,
@@ -209,10 +210,8 @@ impl Config {
             repository: env::var_os("CLOUDROOM_REPOSITORY")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| account_home.clone()),
-            database_url: required("CLOUDROOM_DATABASE_URL")?,
+            api_url: api_url()?,
             store: required("CLOUDROOM_STORE")?,
-            allow_insecure_database: env::var("CLOUDROOM_ALLOW_INSECURE_DATABASE").as_deref()
-                == Ok("1"),
             instance: match env::var("CLOUDROOM_INSTANCE") {
                 Ok(value)
                     if !value.is_empty()
@@ -233,6 +232,31 @@ impl Config {
             account_home,
         })
     }
+}
+
+/// HTTPS only, except a loopback test server. A managed install never silently drops to local-only history.
+fn api_url() -> io::Result<Option<String>> {
+    let Some(url) = env::var("CLOUDROOM_API_URL").ok().filter(|v| !v.is_empty()) else {
+        return if env::var("CLOUDROOM_LOCAL_HISTORY").as_deref() == Ok("1") {
+            Ok(None)
+        } else {
+            Err(io::Error::other(
+                "set CLOUDROOM_API_URL, or CLOUDROOM_LOCAL_HISTORY=1 to keep history only on this machine",
+            ))
+        };
+    };
+    let loopback = ["http://127.0.0.1:", "http://localhost:", "http://[::1]:"];
+    let valid = (url.starts_with("https://")
+        || loopback.iter().any(|prefix| url.starts_with(prefix)))
+        && !url.ends_with('/')
+        && !url.contains(['?', '#', '@'])
+        && url.bytes().all(|b| b.is_ascii_graphic());
+    if !valid {
+        return Err(io::Error::other(
+            "CLOUDROOM_API_URL must be an https:// URL without a trailing slash",
+        ));
+    }
+    Ok(Some(url))
 }
 
 fn required(name: &str) -> io::Result<String> {

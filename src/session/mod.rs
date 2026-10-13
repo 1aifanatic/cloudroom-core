@@ -7,7 +7,7 @@ mod accounts;
 pub mod automation;
 mod catalog;
 mod guard;
-mod history;
+pub(crate) mod history;
 mod prompt;
 pub mod report;
 mod sleep;
@@ -294,6 +294,8 @@ pub struct Manager {
     stopping: AtomicBool,
     startups: Semaphore,
     teleports: teleport::Transfers,
+    /// Asks the history uploader to send now (a drain or stop), instead of at its next 30-second batch.
+    uploads: tokio::sync::Notify,
 }
 
 impl Manager {
@@ -399,7 +401,7 @@ impl Manager {
         let history = history::History::new(&config)?;
         let local = Arc::new(Mutex::new(local));
         let registry = local.clone();
-        let observability = Observability::start(&config, history.pool.clone(), move || {
+        let observability = Observability::start(&config, history.api.clone(), move || {
             registry.lock().unwrap().agent_counts()
         });
         Ok(Arc::new(Self {
@@ -423,6 +425,7 @@ impl Manager {
             claude_login: runtime::claude_login::ClaudeLogin::default(),
             cursor_auth: runtime::cursor_auth::CursorAuth::default(),
             stopping: AtomicBool::new(false),
+            uploads: tokio::sync::Notify::new(),
             // Bound cold-start CPU contention, not the number of running sessions.
             startups: Semaphore::new(
                 std::thread::available_parallelism().map_or(1, |n| (n.get() / 2).max(1)),
@@ -464,10 +467,8 @@ impl Manager {
     }
 
     pub async fn ready(&self) -> bool {
-        !self.is_stopping()
-            && !self.storage.blocks()
-            && self.recording_available()
-            && self.history.ready().await
+        // Local only: the journal is the source of truth, and uploads catch up whenever the API answers.
+        !self.is_stopping() && !self.storage.blocks() && self.recording_available()
     }
 
     pub fn saving(&self) -> Value {
@@ -495,7 +496,7 @@ impl Manager {
         self.history
             .read(session, after)
             .await
-            .map_err(|e| Error::Storage(format!("history database: {e}")))?
+            .map_err(|e| Error::Storage(format!("saved history: {e}")))?
             .into_iter()
             .map(Record::for_client)
             .collect()
@@ -508,7 +509,7 @@ impl Manager {
         self.history
             .summary(id, None)
             .await
-            .map_err(|e| Error::Storage(format!("history database: {e}")))?
+            .map_err(|e| Error::Storage(format!("saved history: {e}")))?
             .0
             .ok_or(Error::NotFound)
     }
@@ -748,7 +749,7 @@ impl Manager {
         );
         // Fresh-state retries must not recreate an externally saved session.
         let (external, receipt) =
-            history.map_err(|e| Error::Storage(format!("history database: {e}")))?;
+            history.map_err(|e| Error::Storage(format!("saved history: {e}")))?;
         if let Some(external) = external {
             if harness.is_some_and(|kind| kind != external.harness) {
                 return Err(Error::Conflict("request_id already has different content"));
@@ -2255,9 +2256,11 @@ impl Manager {
                     break;
                 }
             }
+            // The harnesses' last records, then diagnostics. A drain already saved the rest; systemd waits 10 s.
+            self.flush_history(Duration::from_secs(2)).await;
             self.observability.shutdown().await;
         };
-        if tokio::time::timeout(runtime::SHUTDOWN_GRACE + Duration::from_secs(1), cleanup)
+        if tokio::time::timeout(runtime::SHUTDOWN_GRACE + Duration::from_secs(4), cleanup)
             .await
             .is_err()
         {

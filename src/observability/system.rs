@@ -68,6 +68,10 @@ pub(super) struct Sampler {
     cpu: Option<(u64, u64)>,
     container_cpu: Option<(u64, Instant)>,
     processes: Option<Processes>,
+    /// The container's CPU counter (microseconds) at the last minute's reading.
+    minute_usage: Option<u64>,
+    /// Without that counter: ticks counted twice in an earlier minute, still to be taken back.
+    over_counted: u64,
 }
 
 impl Sampler {
@@ -85,8 +89,7 @@ impl Sampler {
                         .then(|| (total - idle) as f64 * 100.0 / total as f64)
                 });
         self.cpu = current;
-        let usage = cgroup("cpu.stat").and_then(|s| field(&s, "usage_usec"));
-        if let Some((usage, cpus)) = usage.zip(cgroup_cpus()) {
+        if let Some((usage, cpus)) = container_usage().zip(cgroup_cpus()) {
             let now = Instant::now();
             cpu_used_percent = self.container_cpu.and_then(|(old, at)| {
                 let wall = now.duration_since(at).as_micros() as f64 * cpus;
@@ -122,13 +125,31 @@ impl Sampler {
     }
 
     /// CPU per program since the last call, from every process `/proc` shows. Called once a minute; the first
-    /// call only takes a baseline. `busy`: an agent worked or waited in line at some point during the minute.
+    /// call only takes a baseline. `busy`: an agent did something at some point during the minute.
     pub fn minute(&mut self, busy: bool) -> Option<CpuMinute> {
-        let now = processes();
+        let processes = processes();
+        // Only a container's own cgroup: a root cgroup (no `cpu.max`) may count processes `/proc` doesn't show.
+        let usage = container_usage().filter(|_| cgroup_cpus().is_some());
+        self.tally(processes, usage, busy)
+    }
+
+    fn tally(&mut self, now: Processes, usage: Option<u64>, busy: bool) -> Option<CpuMinute> {
+        let usage_before = std::mem::replace(&mut self.minute_usage, usage);
         let before = self.processes.replace(now)?;
-        let (mut used, exited) = account(&before, self.processes.as_ref()?);
+        let (mut used, children) = account(&before, self.processes.as_ref()?);
         used.sort_by_key(|(_, ticks)| std::cmp::Reverse(*ticks));
-        let total_ms = (used.iter().map(|(_, ticks)| ticks).sum::<u64>() + exited) * MS_PER_TICK;
+        let own_ms = used.iter().map(|(_, ticks)| ticks).sum::<u64>() * MS_PER_TICK;
+        // `/proc` can't be read all at once: a process reaped between two reads counts in both its own and its
+        // parent's numbers. The container's counter is exact, so it sets the total and the rest is `(exited)`.
+        let exited_ms = match usage.zip(usage_before) {
+            Some((now, before)) => (now.saturating_sub(before) / 1000).saturating_sub(own_ms),
+            None => {
+                let net = children - i128::from(self.over_counted);
+                self.over_counted = u64::try_from(-net).unwrap_or(0);
+                u64::try_from(net).unwrap_or(0) * MS_PER_TICK
+            }
+        };
+        let total_ms = own_ms + exited_ms;
         let mut programs = BTreeMap::new();
         for (i, (program, ticks)) in used.into_iter().enumerate() {
             let name = if i < TOP_PROGRAMS {
@@ -138,8 +159,8 @@ impl Sampler {
             };
             *programs.entry(name).or_default() += ticks * MS_PER_TICK;
         }
-        if exited > 0 {
-            programs.insert("(exited)".into(), exited * MS_PER_TICK);
+        if exited_ms > 0 {
+            programs.insert("(exited)".into(), exited_ms);
         }
         Some(CpuMinute {
             total_ms,
@@ -149,39 +170,39 @@ impl Sampler {
     }
 }
 
-/// Ticks per program between two readings, and ticks of processes that ended in between. An ended process's
-/// whole count moves into its reaper's `children`, so only its part since the last reading is new.
-fn account(before: &Processes, now: &Processes) -> (Vec<(String, u64)>, u64) {
+/// Ticks per program between two readings, and the net ticks of finished children: a process that ended moved
+/// its whole count into its reaper's `children`, so only its part since the last reading is new.
+fn account(before: &Processes, now: &Processes) -> (Vec<(String, u64)>, i128) {
     let mut used: HashMap<String, u64> = HashMap::new();
-    let mut exited: i128 = 0;
+    let mut children: i128 = 0;
     for (key, process) in now {
         let old = before.get(key).cloned().unwrap_or_default();
         *used.entry(process.program.clone()).or_default() += process.own.saturating_sub(old.own);
-        exited += i128::from(process.children.saturating_sub(old.children));
+        children += i128::from(process.children.saturating_sub(old.children));
     }
     for (key, process) in before {
         if !now.contains_key(key) {
-            exited -= i128::from(process.own + process.children);
+            children -= i128::from(process.own + process.children);
         }
     }
     let used = used.into_iter().filter(|(_, ticks)| *ticks > 0).collect();
-    (used, exited.max(0) as u64)
+    (used, children)
 }
 
+/// Every process `/proc` shows, parents (lower pids) first: a child that ends mid-walk then lands in its parent's
+/// count in the next reading, rather than in both of this one.
 fn processes() -> Processes {
     let mut found = Processes::new();
     let Ok(entries) = fs::read_dir("/proc") else {
         return found;
     };
-    for entry in entries.flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|s| s.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
+    let mut pids: Vec<u32> = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse().ok())
+        .collect();
+    pids.sort_unstable();
+    for pid in pids {
+        let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
             continue;
         };
         let Some((head, rest)) = stat.rsplit_once(") ") else {
@@ -206,24 +227,62 @@ fn processes() -> Processes {
     found
 }
 
-/// The process name; for Node, the npm package it runs (`typescript`, `@anthropic-ai/claude-code`), so tools and
-/// harnesses don't all read `node`.
+/// The process name. For Node (`node`, or `node-MainThread` in newer versions), the npm package its script
+/// belongs to (`typescript`, `@anthropic-ai/claude-code`), so tools and harnesses don't all read `node`.
 fn program(pid: u32, comm: &str) -> String {
-    if comm != "node" {
+    if !matches!(comm, "node" | "node-MainThread") {
         return comm.to_owned();
     }
     let cmdline = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-    let cmdline = String::from_utf8_lossy(&cmdline);
-    let package = cmdline.split('\0').find_map(|arg| {
-        let mut parts = arg.rsplit_once("node_modules/")?.1.split('/');
-        let first = parts.next().filter(|name| !name.is_empty())?;
-        if first.starts_with('@') {
-            Some(format!("{first}/{}", parts.next()?))
-        } else {
-            Some(first.to_owned())
+    node_package(&String::from_utf8_lossy(&cmdline)).unwrap_or_else(|| "node".into())
+}
+
+/// Reads only the script path, never inline code (`-e`, `-p`), and keeps only a valid npm package name.
+fn node_package(cmdline: &str) -> Option<String> {
+    let mut args = cmdline.split('\0').skip(1);
+    let script = loop {
+        let arg = args.next()?;
+        if !arg.starts_with('-') {
+            break arg;
         }
-    });
-    package.unwrap_or_else(|| comm.to_owned())
+        let short = !arg.starts_with("--");
+        if arg.starts_with("--eval")
+            || arg.starts_with("--print")
+            || (short && arg.contains(['e', 'p']))
+        {
+            return None;
+        }
+        // These take the next argument as their value, not as the script.
+        if matches!(
+            arg,
+            "-r" | "--require" | "--import" | "--loader" | "--experimental-loader"
+        ) {
+            args.next()?;
+        }
+    };
+    let mut parts = script.rsplit_once("node_modules/")?.1.split('/');
+    let first = parts.next()?;
+    match first.strip_prefix('@') {
+        Some(scope) => {
+            let package = parts.next()?;
+            (npm_name(scope) && npm_name(package)).then(|| format!("{first}/{package}"))
+        }
+        None => npm_name(first).then(|| first.to_owned()),
+    }
+}
+
+/// One part of an npm package name, bounded: lowercase letters, digits, `-`, `.` and `_`, up to 64 characters.
+fn npm_name(part: &str) -> bool {
+    (1..=64).contains(&part.len())
+        && !part.starts_with(['.', '_'])
+        && part
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"-._".contains(&b))
+}
+
+/// The container's CPU counter in microseconds, when its cgroup is visible.
+fn container_usage() -> Option<u64> {
+    cgroup("cpu.stat").and_then(|s| field(&s, "usage_usec"))
 }
 
 /// The container's own cgroup v2 counters, when visible.
@@ -308,13 +367,17 @@ fn memory_field(text: &str, name: &str) -> Option<u64> {
     })
 }
 
-#[test]
-fn cpu_minute_counts_ended_processes_once() {
-    let ticks = |program: &str, own, children| Ticks {
+#[cfg(test)]
+fn ticks(program: &str, own: u64, children: u64) -> Ticks {
+    Ticks {
         program: program.into(),
         own,
         children,
-    };
+    }
+}
+
+#[test]
+fn cpu_minute_counts_ended_processes_once() {
     // Before: a harness and a build it started.
     let before = Processes::from([
         ((1, 1), ticks("claude", 100, 0)),
@@ -329,6 +392,75 @@ fn cpu_minute_counts_ended_processes_once() {
     used.sort();
     assert_eq!(used, [("cargo".to_owned(), 40), ("claude".to_owned(), 10)]);
     assert_eq!(exited, 70);
+}
+
+#[test]
+fn cpu_minute_never_keeps_a_double_count() {
+    // A build uses 40 ticks and ends while `/proc` is read: its ticks show as its own and in the harness's children.
+    let start = Processes::from([
+        ((1, 1), ticks("claude", 100, 0)),
+        ((2, 5), ticks("tsc", 0, 0)),
+    ]);
+    let racing = Processes::from([
+        ((1, 1), ticks("claude", 110, 40)),
+        ((2, 5), ticks("tsc", 40, 0)),
+    ]);
+    let after = Processes::from([((1, 1), ticks("claude", 120, 40))]);
+    let later = Processes::from([((1, 1), ticks("claude", 120, 100))]);
+
+    // A container's own counter (microseconds) is exact: 50 ticks, then 10.
+    let mut sampler = Sampler::default();
+    assert!(sampler.tally(start.clone(), Some(0), true).is_none());
+    let minute = sampler.tally(racing.clone(), Some(500_000), true).unwrap();
+    assert_eq!(
+        (minute.total_ms, minute.programs.get("(exited)")),
+        (500, None)
+    );
+    assert_eq!(
+        sampler
+            .tally(after.clone(), Some(600_000), true)
+            .unwrap()
+            .total_ms,
+        100
+    );
+
+    // Without one, the 40 counted twice are taken back from the next finished children (60 ticks), not lost.
+    let mut sampler = Sampler::default();
+    sampler.tally(start, None, true);
+    let totals: Vec<u64> = [racing, after, later]
+        .into_iter()
+        .map(|now| sampler.tally(now, None, true).unwrap().total_ms)
+        .collect();
+    assert_eq!(totals, [900, 100, 200]);
+    assert_eq!(totals.iter().sum::<u64>(), (50 + 10 + 60) * MS_PER_TICK);
+}
+
+#[test]
+fn node_processes_show_only_a_valid_package_name() {
+    let cases = [
+        (
+            "node\0/app/node_modules/.pnpm/typescript@5/node_modules/typescript/bin/tsc\0-p\0.",
+            Some("typescript"),
+        ),
+        (
+            "node\0--max-old-space-size=4096\0/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js",
+            Some("@anthropic-ai/claude-code"),
+        ),
+        (
+            "node\0-e\0require('/x/node_modules/sk-live-secret/a')",
+            None,
+        ),
+        ("node\0-pe\0'/x/node_modules/token'", None),
+        ("node\0--eval=require('/x/node_modules/secret')", None),
+        (
+            "node\0-r\0/x/node_modules/dotenv/config.js\0server.js",
+            None,
+        ),
+        ("node\0/x/node_modules/SECRET_TOKEN=abc/a.js", None),
+    ];
+    for (cmdline, package) in cases {
+        assert_eq!(node_package(cmdline).as_deref(), package, "{cmdline}");
+    }
 }
 
 #[cfg(target_os = "linux")]

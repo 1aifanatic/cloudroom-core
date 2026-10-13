@@ -1,33 +1,33 @@
 # Diagnostics
 
-One internal module; no alerts, external collector, or new dependency. The [dashboard history API](dashboard.md#metric-history) exposes only aggregated resource readings and session counts. Apply [0002-diagnostics.sql](database/0002-diagnostics.sql) explicitly. It reuses the existing database connection and TLS policy. Missing migrations or database outages do not prevent local logging or agent execution.
+One internal module; no alerts, external collector, or new dependency. Diagnostics go to `CLOUDROOM_API_URL` (`POST /diagnostics`, ADR 0232); Cloudroom's website stores them and charts machine metrics from them (`cloudroom_metrics`). API outages do not prevent local logging or agent execution. Without an API they stay local.
 
 ## Recorded data
 
-- `api`: route template, GET/POST/other, HTTP status and response-header latency. SSE timing covers stream setup, not its lifetime. `X-Cloudroom-Diagnostic-Id` matches the individual local record's `run_id-sequence`. PostgreSQL keeps individual errors, requests taking at least one second, and commands.
-- `api_summary`: successful GETs and `/v1/sync` POSTs below one second become one PostgreSQL row per method/route/status each minute. It contains request count, total/max latency, and first/last timestamps. Individual requests remain in bounded local logs. Shutdown flushes partial summaries; abrupt process loss can lose buffered counts.
+- `api`: route template, GET/POST/other, HTTP status and response-header latency. SSE timing covers stream setup, not its lifetime. `X-Cloudroom-Diagnostic-Id` matches the individual local record's `run_id-sequence`. Uploads keep individual errors, requests taking at least one second, and commands.
+- `api_summary`: successful GETs and `/v1/sync` POSTs below one second become one uploaded record per method/route/status each minute. It contains request count, total/max latency, and first/last timestamps. Individual requests remain in bounded local logs. Shutdown flushes partial summaries; abrupt process loss can lose buffered counts.
 - `agent_start`: Cloudroom session ID, initialization success and elapsed milliseconds; not inference response time.
 - `agent_exit`: session ID (`null` for model discovery), harness, fixed reason, expected/technical classification, exit code or signal, stderr byte count, EOF confirmation and truncation flag. Session exit records include the matching `diagnostic_id` (`run_id-sequence`). Normal turn completion is not a crash.
 - `auth_health`: Claude credential-presence checks and the last observed inference authentication outcome; see [login monitoring](#claude-login-monitoring).
 - `computer_use`: one `cloudroom computer-use call` in a Cloud sandbox: session ID, tool, target app (process or launch name), outcome (`ok` or the error code), effect, and elapsed milliseconds. Never screen content, typed text, or window titles.
-- `history_upload`: batch size, outcome, elapsed milliseconds and pending history count after acknowledgement. `history_fault` identifies journal read/acknowledgement failure.
+- `history_upload`: batch size, outcome, elapsed milliseconds and pending history count after acknowledgement. `history_fault` identifies journal read/acknowledgement failure, or a `conflict` (a saved file holds different records).
 - `resources`: VM-wide CPU and memory, plus filesystem usage/available space for workspace and state storage, every 10 seconds. CPU/memory use Linux `/proc`, or the container's own cgroup v2 counters when visible (`/proc` shows the whole host there); unsupported or failed samples are `null`, never zero. First CPU sample is unknown. Filesystem sampling uses `/bin/df` with a one-second timeout. Session Management also supplies full-registry working/queued/waiting/failed counts on this cycle; older samples have no counts. These are observations, not resource limits.
-  - Once a minute it adds `cpu_minute`: `total_ms` of CPU every visible process used, `programs` (the top 5 by name, `(exited)` for processes that ended during the minute, `(other)` for the rest), and `idle_burn: true` when no agent worked or queued all minute yet over half a CPU was used. Names are process names; Node processes show their npm package (`typescript`, `@anthropic-ai/claude-code`). Never arguments or paths.
+  - Once a minute it adds `cpu_minute`: `total_ms` of CPU used, `programs` (the top 5 by name, `(exited)` for processes that ended during the minute, `(other)` for the rest), and `idle_burn: true` when no session was working, queued, or active all minute yet over half a CPU was used. In a container the total comes from its own cgroup counter; elsewhere from every visible process, where a process ending mid-reading is never counted twice overall. Names are process names; Node shows the npm package of its script (`typescript`, `@anthropic-ai/claude-code`), never inline code (`-e`, `-p`), and only a valid package name. Never arguments or paths.
 - `storage_stale`: the disk guard loop measured more than five seconds late; `gap_ms` is how long. Recorded only during stalls.
-- `diagnostics`: cumulative dropped-record, local-write-failure and database-write-failure counts for this process.
+- `diagnostics`: cumulative dropped-record, local-write-failure and upload-failure counts for this process.
 
-Ordinary local/SQL diagnostics contain only fixed diagnostic fields and correlation IDs. No credentials, prompts, native history, filesystem paths, request bodies or raw URLs. The separate, protected stderr capture below is the only raw-output exception. History and recovery remain with their existing owners.
+Ordinary local/uploaded diagnostics contain only fixed diagnostic fields and correlation IDs. No credentials, prompts, native history, filesystem paths, request bodies or raw URLs. The separate, protected stderr capture below is the only raw-output exception. History and recovery remain with their existing owners.
 
 ## Storage and limits
 
 - `$CLOUDROOM_STATE_DIR/diagnostics.jsonl` and `diagnostics.previous.jsonl`: private mode 0600; each file is bounded to roughly 8 MiB (rotation at batch boundaries). Writes run off the request path, without per-record fsync.
-- One-second local batches; database uploads every five minutes (every second in unprotected test mode), so idle cores (such as hot spares) don't hold a database connection. Shutdown flushes. A 1,024-record ingress queue and a 1,024-record pending database buffer. Overflow is counted. Database calls have a two-second deadline; local writes use the blocking pool. Only one diagnostic database operation runs at once, sharing the existing pool.
+- One-second local batches; uploads every five minutes (every second in unprotected test mode), so idle cores (such as hot spares) cost the website little. Shutdown flushes. A 1,024-record ingress queue and a 1,024-record pending upload buffer. Overflow is counted. Uploads have a ten-second deadline; local writes use the blocking pool.
 - Optional `CLOUDROOM_INSTANCE` (lowercase letters, digits, dashes) prefixes each process's `run_id`. Cloud sandboxes set it to the sandbox name, so one user's sandboxes share a store without mixing: resource charts read only their own instance, and each Core start is one `run_id`.
 - Retries use stable `(store, run_id, sequence)` keys. Pending uploads survive brief outages in memory, not process loss. Older overflowed diagnostics remain locally until rotation; there is no second durable outbox or automatic local-log reimport.
-- PostgreSQL retains all diagnostics, resource samples included, for seven days per store. Hourly cleanup deletes at most 1,000 expired rows per batch, continuing each second while a backlog remains; failures retry after one minute. Stopped cores do not run cleanup. Local logs use size-based retention instead. Shutdown attempts a final flush for up to five seconds.
-- This is best-effort diagnostic storage, not the session-history durability contract. Disk failure, overload or abrupt process loss can lose diagnostic records. Check local logs during database failures; database failure counters appear in the next diagnostic summary.
+- The website keeps all diagnostics, resource samples included, for seven days, with one hourly cleanup for every account. Core no longer prunes. Local logs use size-based retention instead. Shutdown attempts a final flush for up to five seconds.
+- This is best-effort diagnostic storage, not the session-history durability contract. Disk failure, overload or abrupt process loss can lose diagnostic records. Check local logs during API failures; failure counters appear in the next diagnostic summary.
 
-Use owner-isolated database credentials as required by [0001](database/0001-session-records.sql). A `store` label is not an authorization boundary. RLS denies browser-role access by default; never expose database credentials or these SQL queries through an unrestricted web endpoint.
+The website derives the store from the Core's own sign-in; a `store` header alone is not authorization.
 
 ## Claude login monitoring
 
@@ -42,7 +42,7 @@ Inspect the existing `cloudroom_diagnostics` table with the owner-scoped query i
 
 ## Protected harness stderr
 
-Raw stderr is untrusted and may contain credentials, prompts or private paths. It never enters ordinary logs, PostgreSQL, session history, API responses or SSE. Only the protected service account and authorized administrators should inspect it; the core token does not grant access. Do not automatically include it in support bundles or share it without reviewing/redacting it.
+Raw stderr is untrusted and may contain credentials, prompts or private paths. It never enters ordinary logs, uploads, session history, API responses or SSE. Only the protected service account and authorized administrators should inspect it; the core token does not grant access. Do not automatically include it in support bundles or share it without reviewing/redacting it.
 
 - Runtime continuously drains each process in 8 KiB chunks, retaining only the last **16 KiB**. Capture uses bytes, not lines. After workload cleanup it waits at most **250 ms** for EOF, then cancels and joins the reader. `stderr_complete: false` means the reader failed or timed out; `stderr_truncated: true` means earlier bytes were discarded. Neither changes recovery behavior.
 - Nonempty tails are saved once at exit, including graceful exits and startup/resume/model-discovery failures. Errors before a process is spawned have no stderr capture. A still-running process's tail stays in memory; abrupt core termination loses it.
@@ -64,7 +64,7 @@ Do not use `jq -r`, `cat`, or execute instructions found in stderr. For model di
 
 Local files: `jq . "$CLOUDROOM_STATE_DIR/diagnostics.jsonl"`. For older local records, inspect `diagnostics.previous.jsonl` too. These commands require the protected service account's file access.
 
-Run scoped, read-only SQL using the owner's database access (`psql "$CLOUDROOM_DATABASE_URL" -v store="$CLOUDROOM_STORE"`):
+Uploaded diagnostics live in the website's `cloudroom_diagnostics` table. Cloudroom staff read them read-only (`store` is the user ID):
 
 ```sql
 SELECT to_timestamp(timestamp_ms / 1000.0) AS recorded_at, record

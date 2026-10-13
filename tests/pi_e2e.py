@@ -79,8 +79,8 @@ def main():
                 'PATH':safe_path,'CLOUDROOM_TOKEN':secrets.token_hex(32),'CLOUDROOM_LISTEN':'127.0.0.1:0',
                 'CLOUDROOM_STATE_DIR':str(state),'CLOUDROOM_REPOSITORY':str(repo),'CLOUDROOM_ACCOUNT_HOME':str(home),
                 'CLOUDROOM_HARNESS':'pi','CLOUDROOM_PI_BINARY':str(launcher),'CLOUDROOM_PI_HOME':str(agent),
-                'CLOUDROOM_PI_MODEL':model,'CLOUDROOM_PI_PROVIDER':provider,'CLOUDROOM_DATABASE_URL':'postgres://127.0.0.1:1/unused',
-                'CLOUDROOM_ALLOW_INSECURE_DATABASE':'1','CLOUDROOM_STORE':'real-pi-test','CLOUDROOM_UNPROTECTED_TEST_MODE':'1',
+                'CLOUDROOM_PI_MODEL':model,'CLOUDROOM_PI_PROVIDER':provider,'CLOUDROOM_LOCAL_HISTORY':'1',
+                'CLOUDROOM_STORE':'real-pi-test','CLOUDROOM_UNPROTECTED_TEST_MODE':'1',
             }
             service=Service(core,root/'service.log').start()
             until(lambda:service.session('cr_pi')['state']=='idle','real Pi resume',40)

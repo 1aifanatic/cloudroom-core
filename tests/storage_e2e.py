@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Disk safety on an explicitly disposable Linux VM. Run as root, never a customer host.
 Uses a small disposable tmpfs, cgroup freezing, the Rust API and a protocol fixture.
-Model/DB fixtures are not a claim of BB or real-inference delivery.
+Model/API fixtures are not a claim of BB or real-inference delivery.
 """
 import base64
 import hashlib
@@ -18,9 +18,6 @@ import time
 from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATIONS = ROOT / 'docs/database'
-if not (MIGRATIONS / '0001-session-records.sql').is_file():
-    MIGRATIONS = ROOT.parent / 'docs/database'
 
 
 def fixture():
@@ -112,8 +109,9 @@ def main():
             os.chown(p, agent.pw_uid, agent.pw_gid); p.chmod(0o700)
     run('runuser', '-u', agent.pw_name, '--', 'git', 'init', '-q', str(work))
     # An owner-local disposable PostgreSQL; no production data/credentials.
-    container = unit
     token = secrets.token_hex(24)
+    from fake_api import FakeApi
+    api = FakeApi(token, 'disk-fixture')
     policy = dict(agent_uid=agent.pw_uid, agent_gid=agent.pw_gid,
                   cache_dir=str(cache), cgroup_root='/sys/fs/cgroup/system.slice/'+unit+'.service/agents',
                   warning_bytes=200*1024*1024, pause_bytes=100*1024*1024, resume_bytes=160*1024*1024)
@@ -122,7 +120,7 @@ def main():
     env.write_text('\n'.join([f'CLOUDROOM_TOKEN={token}',f'CLOUDROOM_STORAGE_POLICY={policy_file}',f'CLOUDROOM_STATE_DIR={state}',
         f'CLOUDROOM_REPOSITORY={work}',f'CLOUDROOM_ACCOUNT_HOME={home}',f'CLOUDROOM_CODEX_HOME={home}/.codex',
         f'CLOUDROOM_CODEX_BINARY={tools}/storage_e2e.py', 'CLOUDROOM_MODEL=fixture','CLOUDROOM_LISTEN=127.0.0.1:19842',
-        'CLOUDROOM_ALLOW_INSECURE_DATABASE=1','CLOUDROOM_STORE=disk-fixture','CLOUDROOM_DATABASE_URL=postgres://postgres:fixture@127.0.0.1:19843/disk_fixture'])+'\n')
+        'CLOUDROOM_STORE=disk-fixture',f'CLOUDROOM_API_URL={api.url}'])+'\n')
     if mixed:
         with env.open('a') as f:
             f.write(f'CLOUDROOM_PI_BINARY={tools}/pi_fixture.py\nCLOUDROOM_PI_HOME={home}/.pi/agent\nCLOUDROOM_PI_MODEL=fixture\nCLOUDROOM_PI_PROVIDER=fixture\n')
@@ -150,10 +148,6 @@ def main():
         (work/'large-output').unlink()
         run('runuser','-u',service.pw_name,'--','sh','-c','echo protected > '+str(state/'probe'))
         passed('agent writes use actual filesystem capacity, without the former fixed test quota')
-        run('docker','run','-d','--name',container,'--memory','256m','--cpus','.5','--pids-limit','64','-e','POSTGRES_PASSWORD=fixture','-e','POSTGRES_DB=disk_fixture','-p','127.0.0.1:19843:5432','postgres:16-alpine',timeout=120)
-        wait(lambda: subprocess.run(['docker','exec',container,'pg_isready','-h','127.0.0.1','-U','postgres'],capture_output=True).returncode==0,'database')
-        for name in ('0001-session-records.sql', '0002-diagnostics.sql'):
-            run('docker','exec','-i',container,'psql','-U','postgres','-d','disk_fixture','-v','ON_ERROR_STOP=1',input=(MIGRATIONS/name).read_text())
         run('systemd-run','--unit='+unit,'--property=User='+service.pw_name,'--property=Group='+service.pw_name,
             '--property=Delegate=yes','--property=AmbientCapabilities=CAP_SETUID CAP_SETGID CAP_DAC_READ_SEARCH CAP_KILL',
             '--property=CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_DAC_READ_SEARCH CAP_KILL','--property=NoNewPrivileges=yes',
@@ -308,12 +302,12 @@ def main():
         wait(ready,'operator recovery',30)
         wait(lambda:all(not session(s)['storage_paused'] for s in ids),'confirmed thaw')
         passed('operator frees output; only storage-paused workloads are thawed')
-        run('docker','stop','-t','2',container)
+        api.down = True
         write_as_agent(work/'db-outage-output',shutil.disk_usage(base).free//1048576-75)
-        wait(lambda:all(session(s)['storage_paused'] for s in ids),'disk emergency during DB outage')
+        wait(lambda:all(session(s)['storage_paused'] for s in ids),'disk emergency during an API outage')
         assert request('GET','/v1/health')['saving']['pending_records']>0
-        (work/'db-outage-output').unlink(); wait(ready,'disk recovery during DB outage')
-        passed('database outage preserves pending history while local disk emergency pauses work')
+        (work/'db-outage-output').unlink(); wait(ready,'disk recovery during an API outage')
+        passed('an API outage preserves pending history while local disk emergency pauses work')
         missing=base/'unavailable'; work.rename(missing)
         wait(lambda:request('GET','/v1/health')['storage']['reason']=='measurement_unavailable','missing filesystem fails closed')
         request('POST','/v1/sessions',{'request_id':'missing-disk'},409)
@@ -333,7 +327,7 @@ def main():
         raise
     finally:
         subprocess.run(['systemctl','stop',unit],capture_output=True,timeout=20)
-        subprocess.run(['docker','rm','-f','-v',container],capture_output=True)
+        api.close()
         evidence=ROOT/'private/storage-e2e.json';evidence.parent.mkdir(exist_ok=True)
         evidence.write_text(json.dumps({'checks':checks,'fixture':True,'harnesses':['codex','pi'] if mixed else ['codex'],'root':str(base)},indent=2))
         os.chown(evidence.parent,ROOT.stat().st_uid,ROOT.stat().st_gid)

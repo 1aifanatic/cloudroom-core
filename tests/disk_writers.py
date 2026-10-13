@@ -60,7 +60,7 @@ def seed(name):
     records=[('receipt',{'request_id':'start','command':'start','input':{},'model':'fixture','workspace':workspace,'state':'completed'}),('native_identity',{'id':'disk-native','path':str(native)}),('state',{'state':'idle'})]
     for n,(kind,data) in enumerate(records,1):
         (state/f'{n:020}.record').write_text(json.dumps({'sequence':n,'session_id':'cr_probe','kind':kind,'data':data}))
-    return {'PATH':'/usr/local/bin:/usr/bin:/bin','CLOUDROOM_STORAGE_POLICY':str(policy),'CLOUDROOM_LISTEN':'127.0.0.1:0','CLOUDROOM_TOKEN':TOKEN,'CLOUDROOM_ACCOUNT_HOME':str(BASE/'home'),'CLOUDROOM_REPOSITORY':str(BASE/'home'),'CLOUDROOM_STATE_DIR':str(state),'CLOUDROOM_DATABASE_URL':'postgres://127.0.0.1:1/fixture','CLOUDROOM_ALLOW_INSECURE_DATABASE':'1','CLOUDROOM_STORE':'fixture','CLOUDROOM_CODEX_BINARY':str(TOOLS/'core_fixture.py'),'CLOUDROOM_CODEX_HOME':str(home),'CLOUDROOM_MODEL':'fixture'}
+    return {'PATH':'/usr/local/bin:/usr/bin:/bin','CLOUDROOM_STORAGE_POLICY':str(policy),'CLOUDROOM_LISTEN':'127.0.0.1:0','CLOUDROOM_TOKEN':TOKEN,'CLOUDROOM_ACCOUNT_HOME':str(BASE/'home'),'CLOUDROOM_REPOSITORY':str(BASE/'home'),'CLOUDROOM_STATE_DIR':str(state),'CLOUDROOM_LOCAL_HISTORY':'1','CLOUDROOM_STORE':'fixture','CLOUDROOM_CODEX_BINARY':str(TOOLS/'core_fixture.py'),'CLOUDROOM_CODEX_HOME':str(home),'CLOUDROOM_MODEL':'fixture'}
 
 def start(env,name):
     global process,log,address

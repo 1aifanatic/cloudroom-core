@@ -160,9 +160,9 @@ CARGO_BUILD_JOBS=1 cargo test --locked --all-targets
 CARGO_BUILD_JOBS=1 cargo build --locked
 python3 tests/core_fixture.py
 python3 tests/pi_http.py
-python3 tests/cursor_http.py # disposable PostgreSQL required for start-gating checks
+python3 tests/cursor_http.py # uses tests/fake_api.py for start-gating checks
 python3 tests/pi_e2e.py
-# Disposable Linux + PostgreSQL + configured native credentials:
+# Disposable Linux + configured native credentials (tests/fake_api.py stands in for the website):
 python3 tests/core_e2e.py --fixture
 python3 tests/core_e2e.py
 python3 tests/core_e2e.py --harness pi

@@ -51,8 +51,8 @@ class CursorAccounts(unittest.TestCase):
         env = {'PATH': '/usr/local/bin:/usr/bin:/bin', 'CLOUDROOM_UNPROTECTED_TEST_MODE': '1',
                'CLOUDROOM_LISTEN': '127.0.0.1:0', 'CLOUDROOM_TOKEN': 'fixture-' + 'x' * 40,
                'CLOUDROOM_STATE_DIR': str(self.state), 'CLOUDROOM_REPOSITORY': str(self.repo),
-               'CLOUDROOM_DATABASE_URL': 'postgres://127.0.0.1:1/fixture', 'CLOUDROOM_STORE': 'fixture',
-               'CLOUDROOM_ALLOW_INSECURE_DATABASE': '1', 'CLOUDROOM_ACCOUNT_HOME': str(self.home),
+               'CLOUDROOM_LOCAL_HISTORY': '1', 'CLOUDROOM_STORE': 'fixture',
+               'CLOUDROOM_ACCOUNT_HOME': str(self.home),
                'CLOUDROOM_CODEX_BINARY': str(Path(__file__).resolve()),
                'CLOUDROOM_CODEX_HOME': str(self.home / '.codex'), 'CLOUDROOM_MODEL': 'fixture'}
         self.env = env
@@ -72,7 +72,7 @@ class CursorAccounts(unittest.TestCase):
     def test_login_retry_cancel_and_restart(self):
         from workspaces import WorkspaceTests
         self.service.stop()
-        WorkspaceTests.database(self)
+        WorkspaceTests.api(self)
         self.service.start()
         self.service.request('GET', '/v1/accounts/cursor', expected=401, token=None)
         self.assertEqual(self.account()['state'], 'missing')

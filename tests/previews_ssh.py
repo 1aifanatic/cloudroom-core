@@ -98,8 +98,8 @@ def main():
         start('/usr/sbin/sshd', '-D', '-e', '-f', str(ssh_config))
         token = hashlib.sha256(os.urandom(32)).hexdigest()
         env = {'CLOUDROOM_TOKEN': token, 'CLOUDROOM_LISTEN': f'127.0.0.1:{core_port}', 'CLOUDROOM_STATE_DIR': str(state),
-               'CLOUDROOM_ACCOUNT_HOME': agent.pw_dir, 'CLOUDROOM_DATABASE_URL': 'postgres://unused:unused@127.0.0.1:1/unused',
-               'CLOUDROOM_STORE': 'preview-test', 'CLOUDROOM_ALLOW_INSECURE_DATABASE': '1', 'CLOUDROOM_UNPROTECTED_TEST_MODE': '1'}
+               'CLOUDROOM_ACCOUNT_HOME': agent.pw_dir, 'CLOUDROOM_LOCAL_HISTORY': '1',
+               'CLOUDROOM_STORE': 'preview-test', 'CLOUDROOM_UNPROTECTED_TEST_MODE': '1'}
         start('setpriv', '--reuid=cloudroom', '--regid=cloudroom', '--init-groups', '--inh-caps=+kill', '--ambient-caps=+kill',
               'env', *[k+'='+v for k,v in env.items()], str(binary))
 

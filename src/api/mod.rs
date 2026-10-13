@@ -60,7 +60,6 @@ pub fn router(manager: Arc<Manager>, token: String) -> Router {
         )
         .route("/v1/dashboard", get(dashboard))
         .route("/v1/drain", post(drain))
-        .route("/v1/metrics", get(metrics))
         .route(
             "/v1/teleports",
             post(teleport_prepare).layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
@@ -235,25 +234,29 @@ async fn pi_import(
         crate::runtime::pi_auth::import(&manager.config, &manager.storage, credentials).await;
     Ok(Json(result.map_err(pi_error)?))
 }
-/// Copies the Mac's custom Pi providers and installs its packages in the background.
+/// Copies the Mac's custom Pi providers and installs its packages before answering, so Pi
+/// starts with the providers they add. A dropped request leaves the install running.
 async fn pi_setup(
     State(manager): State<Arc<Manager>>,
     Json(setup): Json<Value>,
-) -> Result<Json<Value>> {
+) -> Result<(StatusCode, Json<Value>)> {
     if manager.is_stopping() {
         return Err(session::Error::Conflict("service is stopping"));
     }
+    let filtered = crate::runtime::pi_auth::filtered(&setup);
     let (result, missing) =
         crate::runtime::pi_auth::setup(&manager.config, &manager.storage, setup)
             .await
             .map_err(pi_error)?;
-    if !missing.is_empty() {
+    if !missing.is_empty() || !filtered.is_empty() {
         let manager = manager.clone();
-        tokio::spawn(async move {
-            crate::runtime::pi_auth::install(&manager.config, &manager.storage, missing).await
-        });
+        let _ = tokio::spawn(async move {
+            crate::runtime::pi_auth::install(&manager.config, &manager.storage, missing, filtered)
+                .await
+        })
+        .await;
     }
-    Ok(Json(result))
+    Ok((StatusCode::ACCEPTED, Json(result)))
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -285,7 +288,16 @@ struct Drain {
 }
 /// Sandbox hosts call this before stopping the machine (see session::sleep).
 async fn drain(State(manager): State<Arc<Manager>>, Json(input): Json<Drain>) -> Json<Value> {
-    Json(manager.drain(input.hold))
+    let mut answer = manager.drain(input.hold);
+    // The sandbox stops next: save what's pending first. Anything left stays in the journal for the next wake.
+    if answer["drained"] == true {
+        answer["pending_records"] = json!(
+            manager
+                .flush_history(std::time::Duration::from_secs(8))
+                .await
+        );
+    }
+    Json(answer)
 }
 
 async fn codex_auth(State(manager): State<Arc<Manager>>) -> Json<crate::runtime::auth::Status> {
@@ -715,24 +727,6 @@ async fn dashboard(State(manager): State<Arc<Manager>>) -> Json<Value> {
 
 async fn list_sessions(State(manager): State<Arc<Manager>>) -> Json<Value> {
     Json(manager.list_sessions())
-}
-
-#[derive(Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct MetricsQuery {
-    #[serde(default)]
-    range: crate::observability::metrics::Range,
-}
-async fn metrics(
-    State(manager): State<Arc<Manager>>,
-    Query(query): Query<MetricsQuery>,
-) -> Response {
-    match manager.observability.metrics.read(query.range).await {
-        Ok(value) => Json(value).into_response(),
-        Err(_) => (StatusCode::SERVICE_UNAVAILABLE, Json(json!({
-            "error":"Metric history is unavailable. Check diagnostic storage; agents may still be working."
-        }))).into_response(),
-    }
 }
 
 async fn ready(State(manager): State<Arc<Manager>>) -> impl IntoResponse {

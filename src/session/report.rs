@@ -1,5 +1,5 @@
-//! Cloud agents send Cloudroom feedback straight to David by themselves (ADR 0158). The core saves each report straight
-//! to the database with its own login, so reports arrive even while the user's Mac is offline.
+//! Cloud agents send Cloudroom feedback straight to David by themselves (ADR 0158). Core sends each report to the
+//! website itself (ADR 0234), so reports arrive even while the user's Mac is offline.
 use super::{
     Manager,
     thread::{Failure, caller, fail},
@@ -50,19 +50,19 @@ async fn report(
         .get(&session)
         .map(|s| s.harness);
     let context = json!({"core":crate::VERSION,"instance":m.config.instance,"session":session,"harness":harness});
-    m.history.report(message, &context).await.map_err(|error| {
-        let limited = error
-            .as_database_error()
-            .is_some_and(|e| e.code().as_deref() == Some("P0429"));
-        fail(
-            StatusCode::SERVICE_UNAVAILABLE,
-            if limited {
-                "Too many bug reports. Try again later."
-            } else {
-                "Could not save the bug report"
-            },
-        )
-    })?;
+    m.history
+        .report(message, &context)
+        .await
+        .map_err(|error| match error {
+            super::history::ApiError::Status(429, _) => fail(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Too many bug reports. Try again later.",
+            ),
+            error => fail(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &format!("Could not save the bug report: {error}"),
+            ),
+        })?;
     Ok(Json(json!({"sent":true})))
 }
 

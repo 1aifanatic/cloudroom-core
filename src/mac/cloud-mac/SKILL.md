@@ -6,7 +6,7 @@ description: 'Run commands and copy files on the user’s paired Mac from a Clou
 # The user's Mac
 
 - `cloudroom mac run 'COMMAND'` runs it on the user's Mac as the user, in a login shell in their home folder. It prints the output and exits with the command's code. Add `--cwd DIR` to change folder, or `--stdin` to forward input.
-- `cloudroom mac pull MAC_PATH [VM_FOLDER]` copies a Mac file or folder here. `cloudroom mac push VM_PATH [MAC_FOLDER]` copies to the Mac (default: its home folder). Limit: 16 MiB compressed.
+- `cloudroom mac pull MAC_PATH [VM_FOLDER]` copies a Mac file or folder here. `cloudroom mac push VM_PATH [MAC_FOLDER]` copies to the Mac (default: its home folder). Limit: 2 GiB compressed. Over 16 MiB travels in pieces and can take minutes, so run big copies in the background.
 - Add `--write` to any `run` that changes the Mac: editing files, installing, opening apps, or stopping processes. The user picks Mac access: Off, Read-only, Ask first, or Full. Below Full, other commands run read-only and `--write` is refused (Read-only) or waits for the user's approval (Ask first). Under Ask first, the user has up to 5 minutes to approve, so give that command a tool timeout of at least 6 minutes; stopping it sooner cancels the request. `push` always counts as a change. If a change is refused or denied, don't retry; tell the user what you need.
 - Read-only commands can't use `ps` or `top`; use `pgrep -fl` or `lsof` instead.
 - `Mac unavailable` means it is offline, asleep, or access is off. Continue the cloud work; tell the user only if the Mac is essential.

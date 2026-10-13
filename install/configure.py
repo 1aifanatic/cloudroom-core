@@ -52,8 +52,13 @@ def installed_version():
 def configure(data, directory=Path('/etc/cloudroom')):
     if os.geteuid() != 0:
         raise ValueError('Run as the provisioning administrator')
-    if not isinstance(data, dict) or set(data) != {'userId', 'coreToken', 'databaseUrl', 'release'}:
+    # apiUrl (ADR 0232) is where a new Core saves history; older setup requests don't send it.
+    if not isinstance(data, dict) or set(data) - {'apiUrl'} != {'userId', 'coreToken', 'databaseUrl', 'release'}:
         raise ValueError('Unexpected setup fields')
+    api = data.get('apiUrl')
+    if api is not None and (not isinstance(api, str) or not api.startswith('https://') or api.endswith('/')
+                            or any(ord(c) <= 32 or ord(c) == 127 or c in '?#@' for c in api)):
+        raise ValueError('apiUrl must be an https:// URL without a trailing slash')
     owner, token, database, release = (data[k] for k in ('userId', 'coreToken', 'databaseUrl', 'release'))
     if not all(isinstance(v, str) for v in (owner, token, database, release)):
         raise ValueError('Setup fields must be strings')
@@ -88,6 +93,7 @@ def configure(data, directory=Path('/etc/cloudroom')):
             'CLOUDROOM_LISTEN': os.environ.get('CLOUDROOM_LISTEN', '127.0.0.1:9840'), 'CLOUDROOM_ACCOUNT_HOME': agent.pw_dir,
             'CLOUDROOM_STATE_DIR': str(Path(service.pw_dir) / 'history'),
             'CLOUDROOM_STORAGE_POLICY': str(directory / 'storage.json'),
+            **({'CLOUDROOM_API_URL': api} if api else {}),
         }
         if os.environ.get('CLOUDROOM_ALLOW_NON_LOOPBACK_HTTP') == '1':
             settings['CLOUDROOM_ALLOW_NON_LOOPBACK_HTTP'] = '1'

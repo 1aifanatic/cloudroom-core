@@ -1,6 +1,6 @@
-//! Cloud agents schedule work for their own thread (ADR 0212). Core saves each automation straight to the database
-//! with its own login, like feedback, so it works while the user's Mac is offline. The website's every-minute cron
-//! wakes the sandbox and sends the prompt; it also fills in the next run, so Core never parses cron.
+//! Cloud agents schedule work for their own thread (ADR 0212). Core passes each command to the website (ADR 0234),
+//! like feedback, so it works while the user's Mac is offline. The website's every-minute cron wakes the sandbox and
+//! sends the prompt; it also computes the next run, so Core never parses cron.
 use super::{
     Manager,
     thread::{Failure, caller, fail},
@@ -12,9 +12,8 @@ use axum::{
     http::StatusCode,
     routing::post,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sqlx::Row;
 use std::{io, sync::Arc};
 
 const USAGE: &str = "cloudroom automation create --name NAME --prompt TEXT|--prompt-file PATH (--cron 'MIN HOUR DAY MONTH WEEKDAY' [--timezone ZONE] | --at ISO_TIME | --in 30m)
@@ -24,16 +23,23 @@ cloudroom automation pause|resume|run|delete ID
 Re-prompts this Cloud thread on a schedule, even while the user's Mac is off. Cloudroom fills in the next run within a minute; check `list` for it or an error.";
 const MAX_PROMPT: usize = 32_000;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Body {
     action: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     cron: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     timezone: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     delay: Option<String>,
 }
 
@@ -49,74 +55,32 @@ async fn automation(
 ) -> Result<Json<Value>, Failure> {
     let session = caller(&m, peer, "automation")?;
     check(&input)?;
-    let pool = &m.history.pool;
-    let database = |error: sqlx::Error| {
-        let message = error.as_database_error().map(|e| e.message().to_owned());
-        fail(
+    let Some(api) = &m.history.api else {
+        return Err(fail(
             StatusCode::CONFLICT,
-            &message.unwrap_or_else(|| format!("Could not save the automation: {error}")),
-        )
+            "Run cloudroom automation from a Cloudroom cloud thread",
+        ));
     };
-    let id = || {
-        input
-            .id
-            .as_deref()
-            .ok_or(fail(StatusCode::BAD_REQUEST, "Give the automation ID"))
-    };
-    let changed = |row: Option<sqlx::postgres::PgRow>| match row {
-        Some(row) => Ok(Json(json!({"id": row.get::<String, _>(0), "ok": true}))),
-        None => Err(fail(StatusCode::NOT_FOUND, "Automation not found")),
-    };
-    match input.action.as_str() {
-        "create" => {
-            let Some(sandbox) = m.config.instance.as_deref() else {
-                return Err(fail(StatusCode::CONFLICT, "Run cloudroom automation from a Cloudroom cloud thread"));
-            };
-            let row = sqlx::query("SELECT cloudroom_private.core_add_automation($1, $2, $3, $4, $5, $6, coalesce($7::timestamptz, now() + $8::interval))::text")
-                .bind(sandbox).bind(&session).bind(&input.name).bind(&input.prompt).bind(&input.cron)
-                .bind(&input.timezone).bind(&input.at).bind(&input.delay)
-                .fetch_one(pool).await.map_err(database)?;
-            let id: String = row.get(0);
-            Ok(Json(json!({"id": id, "note": "Created. Cloudroom fills in the next run within a minute: check `cloudroom automation list`."})))
-        }
-        "list" => {
-            let rows = sqlx::query("SELECT id::text, name, prompt, cron, timezone, run_at::text, enabled, next_run_at::text, last_run_at::text, last_error, runs FROM cloudroom_automations ORDER BY created_at LIMIT 100")
-                .fetch_all(pool).await.map_err(database)?;
-            let list: Vec<Value> = rows.iter().map(|r| json!({
-                "id": r.get::<String, _>(0), "name": r.get::<String, _>(1), "prompt": r.get::<String, _>(2),
-                "cron": r.get::<Option<String>, _>(3), "timezone": r.get::<String, _>(4), "run_at": r.get::<Option<String>, _>(5),
-                "enabled": r.get::<bool, _>(6), "next_run_at": r.get::<Option<String>, _>(7), "last_run_at": r.get::<Option<String>, _>(8),
-                "last_error": r.get::<Option<String>, _>(9), "runs": r.get::<i32, _>(10),
-            })).collect();
-            Ok(Json(json!({"automations": list})))
-        }
-        // A new schedule or a resume clears the next run; the website computes it within a minute.
-        "update" => changed(sqlx::query("WITH s AS (SELECT coalesce($6::timestamptz, now() + $7::interval) AS at)
-            UPDATE cloudroom_automations SET name = coalesce($2, name), prompt = coalesce($3, prompt),
-              cron = CASE WHEN $4::text IS NOT NULL THEN $4 WHEN (SELECT at FROM s) IS NOT NULL THEN NULL ELSE cron END,
-              run_at = CASE WHEN $4::text IS NOT NULL THEN NULL WHEN (SELECT at FROM s) IS NOT NULL THEN (SELECT at FROM s) ELSE run_at END,
-              timezone = coalesce($5, timezone),
-              next_run_at = CASE WHEN $4::text IS NOT NULL OR $5::text IS NOT NULL OR (SELECT at FROM s) IS NOT NULL THEN NULL ELSE next_run_at END,
-              updated_at = now()
-            WHERE id = $1::uuid RETURNING id::text")
-            .bind(id()?).bind(&input.name).bind(&input.prompt).bind(&input.cron).bind(&input.timezone).bind(&input.at).bind(&input.delay)
-            .fetch_optional(pool).await.map_err(database)?),
-        action @ ("pause" | "resume" | "run") => {
-            let set = match action {
-                "pause" => "enabled = false, next_run_at = NULL",
-                "resume" => "enabled = true, next_run_at = NULL",
-                _ => "enabled = true, next_run_at = now()",
-            };
-            changed(sqlx::query(&format!("UPDATE cloudroom_automations SET {set}, updated_at = now() WHERE id = $1::uuid RETURNING id::text"))
-                .bind(id()?).fetch_optional(pool).await.map_err(database)?)
-        }
-        "delete" => changed(sqlx::query("DELETE FROM cloudroom_automations WHERE id = $1::uuid RETURNING id::text")
-            .bind(id()?).fetch_optional(pool).await.map_err(database)?),
-        _ => Err(fail(StatusCode::BAD_REQUEST, "Unknown automation action")),
-    }
+    // The website finds the thread from this Core's own sign-in; the session is the agent asking.
+    let mut body =
+        serde_json::to_value(&input).map_err(|e| fail(StatusCode::BAD_REQUEST, &e.to_string()))?;
+    body["session"] = json!(session);
+    api.post("automation", &body)
+        .await
+        .map(Json)
+        .map_err(|error| match error {
+            super::history::ApiError::Status(status, message) => fail(
+                StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+                &message,
+            ),
+            error => fail(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &format!("Could not save the automation: {error}"),
+            ),
+        })
 }
 
-/// Clear errors before the database: the website checks the cron itself and reports a bad one in `list`.
+/// Clear errors before the website, which checks the cron itself.
 fn check(input: &Body) -> Result<(), Failure> {
     let bad = |message: &str| Err(fail(StatusCode::BAD_REQUEST, message));
     if let Some(id) = &input.id
@@ -169,7 +133,7 @@ fn flag<'a>(words: &[&'a str], name: &str) -> Option<&'a str> {
         .and_then(|i| words.get(i + 1).copied())
 }
 
-/// `--in 30m` as a PostgreSQL interval.
+/// `--in 30m` as `30 minutes`.
 fn delay(value: &str) -> Option<String> {
     let split = value.find(|c: char| !c.is_ascii_digit())?;
     let (count, unit) = value.split_at(split);

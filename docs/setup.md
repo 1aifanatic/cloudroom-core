@@ -15,7 +15,7 @@ curl -fsSL https://raw.githubusercontent.com/davidondrej/cloudroom-core/main/ins
 sudo bash install.sh
 ```
 
-It asks for your PostgreSQL URL without showing it, checks the download's checksum, installs Node.js 24 if it is missing, creates both accounts, writes `/etc/cloudroom/core.env` with a new token, and starts the service. It never prints the token or runs SQL. No database yet? Use [one on the same machine](#database-on-the-same-machine). When it finishes, it prints the two remaining steps: apply the database schema and sign in to a harness. Use `--version X.Y.Z` to pick a release. It refuses to run over an existing installation.
+It checks the download's checksum, installs Node.js 24 if it is missing, creates both accounts, writes `/etc/cloudroom/core.env` with a new token, and starts the service. It never prints the token. History stays on this machine ([saved history](#3-saved-history)). When it finishes, it prints the remaining step: sign in to a harness. Use `--version X.Y.Z` to pick a release. It refuses to run over an existing installation.
 
 To build from source instead, follow the manual steps below.
 
@@ -25,7 +25,7 @@ Run these commands in an SSH terminal on the VM, as your administrator account:
 
 ```sh
 sudo apt-get update
-sudo apt-get install -y build-essential curl git ca-certificates pkg-config python3 postgresql-client openssl
+sudo apt-get install -y build-essential curl git ca-certificates pkg-config python3 openssl
 ```
 
 Install [current stable Rust](https://rustup.rs/) and [Node.js 24](https://nodejs.org/en/download). Node and npm must be installed system-wide, under `/usr/local/bin` or `/usr/bin`, not only in your administrator's nvm directory.
@@ -69,38 +69,11 @@ This preserves the old setup in a root-private archive, copies only missing supp
 
 Recreated files under a previously retired home are archived separately, never used as runtime credentials. Unmarked conflicting setup fails closed.
 
-## 3. Prepare PostgreSQL
+## 3. Saved history
 
-### Database on the same machine
+Core records every session in its journal on this machine (`CLOUDROOM_STATE_DIR`) before anything else happens. Self-hosted, that journal is the history: set `CLOUDROOM_LOCAL_HISTORY=1` and back the directory up yourself (ADR 0237). No database is needed.
 
-The simplest setup. History then lives only on this machine, so back it up yourself. Use a password of letters and digits only:
-
-```sh
-sudo apt-get install -y postgresql
-sudo -u postgres createuser --pwprompt cloudroom_db
-sudo -u postgres createdb --owner cloudroom_db cloudroom
-psql 'postgresql://cloudroom_db@127.0.0.1/cloudroom' -W -v ON_ERROR_STOP=1 \
-  -f /usr/local/lib/cloudroom/sql/0001-session-records.sql \
-  -f /usr/local/lib/cloudroom/sql/0002-diagnostics.sql
-```
-
-Give the installer `postgresql://cloudroom_db:PASSWORD@127.0.0.1:5432/cloudroom`. For a loopback address it adds `CLOUDROOM_ALLOW_INSECURE_DATABASE=1` to `core.env`, so Core connects without TLS. Core accepts that setting only for `127.0.0.1`, `localhost`, or `[::1]`. A manual install needs that line too. Source builds find the SQL files in `docs/database/`.
-
-### Database on another machine
-
-Supply a **dedicated PostgreSQL database outside this VM**, with an owner login and TLS. Any compatible PostgreSQL provider works; Supabase is optional. Never share this database login across unrelated users.
-
-Replace `/path/to/database-ca.crt` in both commands with your provider's CA certificate. For a database using a publicly trusted certificate, use `/etc/ssl/certs/ca-certificates.crt`. The service gets its own copy in the protected configuration directory.
-
-```sh
-sudo install -m 644 /path/to/database-ca.crt /etc/cloudroom/database-ca.crt
-psql 'postgresql://OWNER@DB_HOST/DATABASE?sslmode=verify-full&sslrootcert=/path/to/database-ca.crt' \
-  -W -v ON_ERROR_STOP=1 \
-  -f docs/database/0001-session-records.sql \
-  -f docs/database/0002-diagnostics.sql
-```
-
-Replace `OWNER`, `DB_HOST`, and `DATABASE`; enter the password when prompted. Apply these migrations once to your empty database. The service never applies SQL itself.
+Cloudroom's managed sandboxes also save history off the machine: Core sends it to `CLOUDROOM_API_URL`, our website, which stores it as gzip files in object storage. Any server that answers the same five calls can stand in for it; `tests/fake_api.py` is a minimal one. Core refuses to start without one of the two settings, so a managed machine never silently keeps history only on its disk.
 
 ## 4. Configure the service
 
@@ -111,12 +84,12 @@ sudo sh -c 'umask 077; set -C; printf "CLOUDROOM_TOKEN=%s\n" "$(openssl rand -he
 sudoedit /etc/cloudroom/core.env
 ```
 
-Keep the generated `CLOUDROOM_TOKEN` line. Add the following, replacing the database URL and model ID. URL-encode special characters in the database username/password.
+Keep the generated `CLOUDROOM_TOKEN` line. Add the following, replacing the model ID.
 
 ```ini
 CLOUDROOM_LISTEN=127.0.0.1:9840
 CLOUDROOM_STORE=self-hosted
-CLOUDROOM_DATABASE_URL="postgresql://OWNER:PASSWORD@DB_HOST/DATABASE?sslrootcert=/etc/cloudroom/database-ca.crt"
+CLOUDROOM_LOCAL_HISTORY=1
 CLOUDROOM_STATE_DIR=/var/lib/cloudroom/history
 CLOUDROOM_ACCOUNT_HOME=/home/cloudroom-agent
 CLOUDROOM_REPOSITORY=/code/example
@@ -125,7 +98,7 @@ CLOUDROOM_CODEX_HOME=/home/cloudroom-agent/.codex
 CLOUDROOM_CODEX_MODEL=REPLACE_WITH_A_MODEL_YOUR_ACCOUNT_SUPPORTS
 ```
 
-The service unit already sets `CLOUDROOM_STORAGE_POLICY=/etc/cloudroom/storage.json`. Keep the token and database password out of Git, prompts, and agent-owned files.
+The service unit already sets `CLOUDROOM_STORAGE_POLICY=/etc/cloudroom/storage.json`. Keep the token out of Git, prompts, and agent-owned files.
 
 ```sh
 sudo chown cloudroom:cloudroom /etc/cloudroom/core.env
@@ -227,7 +200,7 @@ api http://127.0.0.1:9840/v1/health
 sudo -u cloudroom-agent -H /usr/local/bin/codex login status
 ```
 
-A failed readiness check usually means the database, TLS certificate, migrations, or disk protection needs attention. A failed agent start may mean login or model configuration. There is no fixed limit on open harness sessions; actual concurrency depends on available VM resources. Keep logs private when asking for help.
+A failed readiness check usually means the journal or disk protection needs attention. A failed agent start may mean login or model configuration. There is no fixed limit on open harness sessions; actual concurrency depends on available VM resources. Keep logs private when asking for help.
 
 ## Machines without systemd
 

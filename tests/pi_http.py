@@ -1,14 +1,11 @@
 """Shared Rust HTTP lifecycle with mixed Codex/Pi protocol fixtures and no database."""
 import json
 from pathlib import Path
-import secrets
-import socket
-import subprocess
 import time
 import unittest
 
 import core_fixture
-from core_e2e import Service, until, next_event, MIGRATIONS
+from core_e2e import Service, until, next_event
 
 class MixedHarnessTests(unittest.TestCase):
     tearDown, start = core_fixture.ReplayTests.tearDown, core_fixture.ReplayTests.start
@@ -372,17 +369,11 @@ class MixedHarnessTests(unittest.TestCase):
     def test_fresh_pi_start_keeps_the_captured_default(self):
         # A completed seed never finishes its start receipt. Start a real session instead.
         self.service.stop()
-        name = 'cloudroom-pi-default-' + secrets.token_hex(4)
-        password = secrets.token_hex(8)
-        with socket.socket() as reservation:
-            reservation.bind(('127.0.0.1', 0))
-            port = reservation.getsockname()[1]
+        from fake_api import FakeApi
+        api = FakeApi(self.env['CLOUDROOM_TOKEN'], 'cloudroom-pi-default')
         try:
-            subprocess.run(['docker', 'run', '-d', '--pull=never', '--name', name, '-e', 'POSTGRES_PASSWORD=' + password, '-e', 'POSTGRES_DB=cloudroom_core_test', '-p', f'127.0.0.1:{port}:5432', 'postgres:16-alpine'], check=True, capture_output=True)
-            until(lambda: subprocess.run(['docker', 'exec', name, 'pg_isready', '-h', '127.0.0.1', '-U', 'postgres', '-d', 'cloudroom_core_test'], capture_output=True).returncode == 0, 'postgres', 30)
-            for filename in ['0001-session-records.sql', '0002-diagnostics.sql']:
-                subprocess.run(['docker', 'exec', '-i', name, 'psql', '-U', 'postgres', '-d', 'cloudroom_core_test', '-v', 'ON_ERROR_STOP=1'], input=(MIGRATIONS / filename).read_text(), text=True, check=True, capture_output=True)
-            self.env.update(CLOUDROOM_DATABASE_URL=f'postgres://postgres:{password}@127.0.0.1:{port}/cloudroom_core_test', CLOUDROOM_STORE=name)
+            self.env.pop('CLOUDROOM_LOCAL_HISTORY', None)
+            self.env.update(api.env())
             self.service = Service(self.env, self.root / 'fresh.log')
             self.service.start()
             sid = self.service.request('POST', '/v1/sessions', {'request_id': 'fresh', 'harness': 'pi'}, 202)['session_id']
@@ -404,6 +395,6 @@ class MixedHarnessTests(unittest.TestCase):
         finally:
             if self.service and self.service.process:
                 self.service.stop()
-            subprocess.run(['docker', 'rm', '-f', name], capture_output=True)
+            api.close()
 
 if __name__=='__main__': unittest.main()

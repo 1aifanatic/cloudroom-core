@@ -4,13 +4,11 @@ import http.client
 import json
 from pathlib import Path
 import secrets
-import socket
-import subprocess
 import time
 import unittest
 
 import core_fixture
-from core_e2e import until, run, MIGRATIONS
+from core_e2e import until, run
 
 
 class WorkspaceTests(unittest.TestCase):
@@ -20,17 +18,13 @@ class WorkspaceTests(unittest.TestCase):
         home = self.root / 'pi-home'; home.mkdir(exist_ok=True)
         self.env.update(CLOUDROOM_PI_HOME=str(home), CLOUDROOM_PI_BINARY=str(Path(__file__).with_name('pi_fixture.py').resolve()), CLOUDROOM_PI_MODEL='fixture', CLOUDROOM_PI_PROVIDER='fixture')
 
-    def database(self):
-        name = 'cloudroom-workspace-' + secrets.token_hex(6)
-        password = secrets.token_hex(16)
-        with socket.socket() as socket_:
-            socket_.bind(('127.0.0.1', 0)); port = socket_.getsockname()[1]
-        run('docker', 'run', '-d', '--pull=never', '--name', name, '--memory', '256m', '--cpus', '.5', '--pids-limit', '64', '-e', 'POSTGRES_PASSWORD=' + password, '-e', 'POSTGRES_DB=cloudroom_core_test', '-p', f'127.0.0.1:{port}:5432', 'postgres:16-alpine')
-        self.addCleanup(lambda: subprocess.run(['docker', 'rm', '-f', name], capture_output=True))
-        until(lambda: subprocess.run(['docker','exec',name,'pg_isready','-h','127.0.0.1','-U','postgres'],capture_output=True).returncode == 0, 'disposable PostgreSQL', 30)
-        for filename in ['0001-session-records.sql', '0002-diagnostics.sql']:
-            run('docker','exec','-i',name,'psql','-U','postgres','-d','cloudroom_core_test','-v','ON_ERROR_STOP=1',input=(MIGRATIONS/filename).read_text())
-        self.env.update(CLOUDROOM_DATABASE_URL=f'postgres://postgres:{password}@127.0.0.1:{port}/cloudroom_core_test', CLOUDROOM_STORE=name)
+    def api(self):
+        from fake_api import FakeApi
+        api = FakeApi(self.env['CLOUDROOM_TOKEN'], 'cloudroom-workspace')
+        self.addCleanup(api.close)
+        self.env.pop('CLOUDROOM_LOCAL_HISTORY', None)
+        self.env.update(api.env())
+        return api
 
     def seed(self, key, path, harness='codex', paused=False, parent=None, legacy_state=None):
         workspace = {'id':key,'path':str(path.resolve()), **({'parent':parent} if parent else {})}
@@ -47,7 +41,7 @@ class WorkspaceTests(unittest.TestCase):
         return workspace
 
     def test_new_empty_folders_collisions_concurrent_starts_and_retry(self):
-        self.database(); self.pi(); self.start()
+        self.api(); self.pi(); self.start()
         samples = []
         for kind in ['codex','pi']:
             key = kind + '-empty'

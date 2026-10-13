@@ -15,7 +15,8 @@ from core_fixture import ReplayTests,run
 fixture=ReplayTests()
 fixture.setUp()
 try:
-    fixture.env['CLOUDROOM_DATABASE_URL']=os.environ['CLOUDROOM_DATABASE_URL']
+    from workspaces import WorkspaceTests
+    WorkspaceTests.api(fixture)
     fixture.start()
     print(json.dumps({'url':'http://'+fixture.service.address,'token':fixture.env['CLOUDROOM_TOKEN']}),flush=True)
     for line in sys.stdin:
@@ -55,17 +56,6 @@ test(
   "Rust HTTP: queue, detach, retry, native restart, close and external-history recovery",
   { timeout: 30_000 },
   async (t) => {
-    const database = globalThis.process.env.CLOUDROOM_DATABASE_URL;
-    assert(
-      database,
-      "Set CLOUDROOM_DATABASE_URL to a disposable loopback bb_client_test database",
-    );
-    const target = new URL(database);
-    assert(
-      ["127.0.0.1", "localhost", "[::1]"].includes(target.hostname) &&
-        target.pathname === "/bb_client_test",
-      "Only a disposable loopback bb_client_test database is allowed",
-    );
     const process = spawn("python3", ["-u", "-c", driver], {
       cwd: root,
       stdio: ["pipe", "pipe", "inherit"],
