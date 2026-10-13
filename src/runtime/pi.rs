@@ -405,6 +405,12 @@ impl Adapter for Protocol {
             })]);
         }
         let update = &v["assistantMessageEvent"];
+        // Tool arguments arrive whole in tool_execution_start; nothing reads the per-token chunks.
+        if t == "message_update" && update["type"] == "toolcall_delta" {
+            return Ok(vec![]);
+        }
+        // Usage on every streaming update would add a usage row per chunk; the meter reads completed messages.
+        let usage = (t != "message_update").then_some(&v["usage"]);
         let kind = match t {
             "message_update" => match update["type"].as_str() {
                 Some("text_delta") => "text_delta",
@@ -418,7 +424,7 @@ impl Adapter for Protocol {
         };
         let mut events = vec![Event::Record {
             kind,
-            data: json!({"harness":"pi","type":t,"request_id":s.request,"item_id":v["toolCallId"],"tool_name":v["toolName"],"delta":update["delta"],"output":v["partialResult"],"result":v["result"],"message":v["message"],"usage":v["usage"]}),
+            data: json!({"harness":"pi","type":t,"request_id":s.request,"item_id":v["toolCallId"],"tool_name":v["toolName"],"delta":update["delta"],"output":v["partialResult"],"result":v["result"],"message":v["message"],"usage":usage}),
             native: Some(raw),
         }];
         if t == "response"

@@ -133,12 +133,18 @@ async fn pi_waits_through_retry_and_preserves_tool_snapshots() {
     let started = std::time::Instant::now();
     let mut starts = 0;
     let mut snapshots = Vec::new();
+    let mut updates = Vec::new();
     tokio::time::timeout(Duration::from_secs(4), async {
         while let Some(event) = events.recv().await {
             match event {
                 Event::Started { request, .. } => {
                     assert_eq!(request, "retry");
                     starts += 1;
+                }
+                // Tool-call chunks and per-chunk usage are never recorded.
+                Event::Record { data, .. } if data["type"] == "message_update" => {
+                    assert!(data["usage"].is_null());
+                    updates.push(data["delta"].as_str().unwrap().to_owned());
                 }
                 Event::Record {
                     kind: "tool_snapshot",
@@ -170,6 +176,7 @@ async fn pi_waits_through_retry_and_preserves_tool_snapshots() {
     assert!(started.elapsed() >= Duration::from_millis(250));
     assert_eq!(starts, 1);
     assert_eq!(snapshots, ["one", "one two"]);
+    assert_eq!(updates, ["hi"]);
     handle.request_shutdown();
     tokio::time::timeout(Duration::from_secs(6), async {
         while events.recv().await.is_some() {}

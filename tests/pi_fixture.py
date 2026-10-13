@@ -130,6 +130,8 @@ try:
                         compacting = False
                         send({'type':'compaction_end','willRetry':True})
                         send({'type':'agent_start'})
+                        send({'type':'message_update','assistantMessageEvent':{'type':'toolcall_delta','delta':'{'},'usage':{'input':1}})
+                        send({'type':'message_update','assistantMessageEvent':{'type':'text_delta','delta':'hi'},'usage':{'input':1}})
                         send({'type':'tool_execution_update','toolCallId':'tool','partialResult':{'content':[{'type':'text','text':'one'}]}})
                         send({'type':'tool_execution_update','toolCallId':'tool','partialResult':{'content':[{'type':'text','text':'one two'}]}})
                         finish()
