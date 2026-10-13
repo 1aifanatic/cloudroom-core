@@ -30,6 +30,7 @@ pub fn router(manager: Arc<Manager>, token: String) -> Router {
         .merge(crate::runtime::terminal::routes())
         .merge(crate::mac::routes())
         .merge(crate::secrets::routes())
+        .merge(crate::session::thread::routes())
         .route("/v1/health", get(health))
         .route("/v1/ready", get(ready))
         .route("/v1/capabilities", get(capabilities))

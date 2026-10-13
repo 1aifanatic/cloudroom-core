@@ -376,6 +376,12 @@ impl Manager {
             return Err(Error::Conflict("harness is not configured"));
         }
         self.harness_ready(kind).await?;
+        let (model, provider) = if kind == runtime::Kind::Pi {
+            self.keyed_pi_model(parent, spawn.model.as_deref(), model, provider)
+                .await
+        } else {
+            (model, provider)
+        };
         if let Some(reasoning) = input["reasoning"].as_str() {
             self.execution_supported(kind, model.as_ref(), reasoning)
                 .await?;
@@ -423,6 +429,38 @@ impl Manager {
             manager.launch(child, start_id).await;
         });
         Ok((id, receipt))
+    }
+
+    /// `anthropic/claude-opus-5.5` from a parent on OpenRouter may name OpenRouter's model of that
+    /// ID. Like Pi's own `--model`, prefer the parent's provider when only it has a key.
+    async fn keyed_pi_model(
+        &self,
+        parent: &str,
+        requested: Option<&str>,
+        model: Option<String>,
+        provider: Option<String>,
+    ) -> (Option<String>, Option<String>) {
+        let found = {
+            let local = self.local.lock().unwrap();
+            local
+                .sessions
+                .get(parent)
+                .filter(|p| p.harness == runtime::Kind::Pi)
+                .and_then(|p| p.handle.clone())
+                .and_then(|h| Some((h.provider()?.to_owned(), h)))
+        };
+        let (Some(requested), Some(name), Some(chosen), Some((own, handle))) =
+            (requested, model.as_deref(), provider.as_deref(), found)
+        else {
+            return (model, provider);
+        };
+        if own != chosen
+            && handle.pi_has_key(&own, requested).await.unwrap_or(false)
+            && !handle.pi_has_key(chosen, name).await.unwrap_or(true)
+        {
+            return (Some(requested.to_owned()), Some(own));
+        }
+        (model, provider)
     }
 
     /// Starts a side chat: a new session on a copy of another session's conversation, in its folder,

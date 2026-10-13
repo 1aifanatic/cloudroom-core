@@ -4,7 +4,7 @@ Workspace Management measures actual available disk space. Session Management re
 
 ## Behavior
 
-- At **5 GB available or less**, warn once per low-space episode. Agents, new work, and sync continue.
+- At **5 GB available or less**, warn once per low-space episode. Agents, new work, and sync continue. The episode ends above 6 GB, so space hovering at 5 GB does not repeat the warning.
 - **Below 2 GB**, block new work and uploads, then freeze managed agents, sync transfers, and attachment writers. Saved history, health, and recovery reads remain available. `room-cli vm run` still works and is never frozen, so a person can read work back and free space; bulk `vm run/raw` project copies stay blocked.
 - **Above 2.5 GB**, resume paused work, even if the low-space warning remains. Never replay a prompt or reset an in-flight native RPC deadline because of a pause.
 - **Still paused after 30 seconds** (frozen work never frees space): in each session, kill the process group that wrote the most to disk, never the harness's own group (tool commands run in their own groups). Then thaw work and tell the agent what was stopped. Work pauses again only when half of the space left is used; above 2.5 GB the normal thresholds return.

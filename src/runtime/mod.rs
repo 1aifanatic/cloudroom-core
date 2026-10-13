@@ -101,8 +101,8 @@ pub fn supports(kind: Kind, models: &[Model], model: &str, reasoning: &str) -> R
 
 pub const PI_REASONING_LEVELS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh"];
 
-/// Pi also takes `max` when asked by name, kept out of the picker list: few Pi models have it, and Kimi K3
-/// has nothing else. Pi itself rejects it for models without it.
+/// Pi also takes `max`: few Pi models have it, and Kimi K3 has nothing else. Pi itself rejects it for models
+/// without it, and the app's new-thread picker shows only the levels the model has locally.
 pub fn pi_reasoning_accepted(level: &str) -> bool {
     level == "max" || PI_REASONING_LEVELS.contains(&level)
 }
@@ -784,6 +784,15 @@ impl Handle {
         }
         let result = self.call("get_last_assistant_text", json!({})).await?;
         Ok(result["text"].as_str().unwrap_or_default().to_owned())
+    }
+    /// Whether this Pi process has a working key for `provider`'s `model`.
+    pub async fn pi_has_key(&self, provider: &str, model: &str) -> io::Result<bool> {
+        let result = self.call("get_available_models", json!({})).await?;
+        Ok(result["models"].as_array().is_some_and(|models| {
+            models
+                .iter()
+                .any(|m| m["provider"] == provider && m["id"] == model)
+        }))
     }
     pub async fn usage(&self) -> io::Result<Option<Value>> {
         match self.kind {

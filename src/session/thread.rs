@@ -1,5 +1,7 @@
 //! Cloud agents rename or archive their own thread, change its effort, and start, stop and archive child threads in their own sandbox. Each request
 //! is a session record, so the app applies it whenever it next reads the thread, including after it was offline.
+//! A child gets a sandbox of its own by default (ADR 0229). The app starts and reaches it, so Core records the
+//! request and waits briefly for the app's answer; without one, the child starts in this sandbox instead.
 use super::Manager;
 use crate::preview::Peer;
 use axum::{
@@ -11,22 +13,47 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    collections::HashMap,
     io::{self, Read},
-    sync::Arc,
-    time::Duration,
+    sync::{Arc, LazyLock, Mutex},
+    time::{Duration, Instant},
 };
+use tokio::sync::oneshot;
 
 const USAGE: &str = "cloudroom thread update --self --title TITLE
 cloudroom thread update --self --reasoning-level LEVEL
 cloudroom thread archive --self
 cloudroom thread stop --self
-cloudroom thread spawn --provider codex|claude-code|pi|opencode|hermes [--model MODEL] [--reasoning-level LEVEL] [--title TITLE] --prompt TEXT|--prompt-file PATH
+cloudroom thread spawn --provider codex|claude-code|pi|opencode|hermes [--model MODEL] [--reasoning-level LEVEL] [--title TITLE] [--shared-sandbox] --prompt TEXT|--prompt-file PATH
 cloudroom thread list [--include-archived]
 cloudroom thread output CHILD_ID
 cloudroom thread tell CHILD_ID TEXT
 cloudroom thread stop CHILD_ID
 cloudroom thread archive CHILD_ID";
 const SPAWN_NOTE: &str = "Started in this sandbox and folder. Keep working: Cloudroom sends you a message each time it finishes a turn.";
+const OWN_NOTE: &str = "Started in its own sandbox with a copy of your code (commits and uncommitted changes), on its own branch. It doesn't see your later edits; share work through Git. Use this ID with tell, stop and archive. Keep working: Cloudroom sends you a message each time it finishes a turn.";
+const FALLBACK_NOTE: &str = " The user's Cloudroom app didn't start it in its own sandbox (it's probably closed), so it runs here.";
+const OWN_COMMAND_NOTE: &str =
+    "Passed to the user's Cloudroom app, which applies it while it is open.";
+/// How long a spawn waits for the app to start the child in its own sandbox, and how long after a miss spawns
+/// share this sandbox right away, so a closed app costs one wait, not one per child.
+const APP_WAIT: Duration = Duration::from_secs(15);
+const APP_MISSED_FOR: Duration = Duration::from_secs(300);
+/// How long a child request's outcome is remembered, so a retried spawn or a repeated app answer gets the same one.
+const OUTCOME_KEPT: Duration = Duration::from_secs(3600);
+/// Each child request's outcome, by parent session and request ID. It is decided once, under this lock, so a
+/// child never runs both in its own sandbox and here.
+static CHILDREN: LazyLock<Mutex<HashMap<String, Outcome>>> = LazyLock::new(Mutex::default);
+static APP_MISSED: Mutex<Option<Instant>> = Mutex::new(None);
+
+enum Outcome {
+    /// Waiting for the app: its thread ID, or why it could not start the child.
+    Waiting(oneshot::Sender<Result<String, String>>),
+    /// The app started the child in its own sandbox.
+    Started(String, Instant),
+    /// The app did not answer in time (or the agent gave up): the child runs here, and a late start is cancelled.
+    Here(Instant),
+}
 pub(crate) type Failure = (StatusCode, Json<Value>);
 
 #[derive(Deserialize)]
@@ -44,6 +71,17 @@ pub struct SpawnBody {
     reasoning: Option<String>,
     title: Option<String>,
     prompt: String,
+    /// Run the child in this sandbox and folder instead of a sandbox of its own (ADR 0229).
+    #[serde(default)]
+    shared: bool,
+}
+
+/// The app's answer to a child request: the child thread it started, or why it could not.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChildAnswer {
+    thread: Option<String>,
+    error: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -61,6 +99,11 @@ pub struct Tell {
 fn valid(title: &str) -> bool {
     !title.is_empty() && title.chars().count() <= 200 && !title.chars().any(char::is_control)
 }
+/// The app answers child requests here.
+pub fn routes() -> Router<Arc<Manager>> {
+    Router::new().route("/v1/sessions/{id}/children/{request}", post(answer_child))
+}
+
 /// Served on the agent-only socket that `cloudroom mac` also uses.
 pub(crate) fn agent_routes() -> Router<Arc<Manager>> {
     Router::new()
@@ -207,12 +250,13 @@ async fn spawn(
     }
     let harness = input
         .provider
+        .as_deref()
         .map(|p| {
             serde_json::from_value(json!(p))
                 .map_err(|_| bad("Use --provider codex, claude-code, pi, opencode or hermes"))
         })
         .transpose()?;
-    let key = match input.request_id {
+    let key = match input.request_id.clone() {
         Some(key) => key,
         None => random_key().map_err(|e| fail(StatusCode::SERVICE_UNAVAILABLE, &e.to_string()))?,
     };
@@ -226,6 +270,13 @@ async fn spawn(
             "request_id must be 1-64 ASCII letters, digits, underscores or hyphens",
         ));
     }
+    let mut note = SPAWN_NOTE.to_owned();
+    if !input.shared {
+        match own_sandbox_child(&m, &parent, &key, &input).await? {
+            Some(thread) => return Ok(Json(json!({"id":thread,"note":OWN_NOTE}))),
+            None => note.push_str(FALLBACK_NOTE),
+        }
+    }
     let spawn = super::Spawn {
         harness,
         model: input.model,
@@ -238,8 +289,162 @@ async fn spawn(
         .await
         .map_err(session_failure)?;
     Ok(Json(
-        json!({"id":id,"harness":receipt.input["harness"],"model":receipt.model,"note":SPAWN_NOTE}),
+        json!({"id":id,"harness":receipt.input["harness"],"model":receipt.model,"note":note}),
     ))
+}
+
+/// Asks the app to start the child in a sandbox of its own with a copy of this thread's code, and waits for
+/// its answer. None means no answer: the app is closed or too old, so the child starts in this sandbox.
+async fn own_sandbox_child(
+    m: &Manager,
+    parent: &str,
+    key: &str,
+    input: &SpawnBody,
+) -> Result<Option<String>, Failure> {
+    let id = format!("own_{key}");
+    let slot = format!("{parent}/{id}");
+    let (reply, answer) = oneshot::channel();
+    {
+        let mut children = CHILDREN.lock().unwrap();
+        children.retain(|_, outcome| match outcome {
+            Outcome::Started(_, at) | Outcome::Here(at) => at.elapsed() < OUTCOME_KEPT,
+            Outcome::Waiting(_) => true,
+        });
+        match children.get(&slot) {
+            Some(Outcome::Started(thread, _)) => return Ok(Some(thread.clone())),
+            Some(Outcome::Here(_)) => return Ok(None),
+            Some(Outcome::Waiting(_)) => {
+                return Err(fail(
+                    StatusCode::CONFLICT,
+                    "A child with this request_id is already starting",
+                ));
+            }
+            None => {}
+        }
+        if APP_MISSED
+            .lock()
+            .unwrap()
+            .is_some_and(|at| at.elapsed() < APP_MISSED_FOR)
+        {
+            return Ok(None);
+        }
+        children.insert(slot.clone(), Outcome::Waiting(reply));
+    }
+    // If the agent stops waiting before the app answers, the child runs nowhere and a late start is cancelled.
+    struct Pending(String);
+    impl Drop for Pending {
+        fn drop(&mut self) {
+            let mut children = CHILDREN.lock().unwrap();
+            if let Some(outcome @ Outcome::Waiting(_)) = children.get_mut(&self.0) {
+                *outcome = Outcome::Here(Instant::now());
+            }
+        }
+    }
+    let _pending = Pending(slot.clone());
+    let mut data = json!({"id":id,"prompt":input.prompt});
+    for (name, value) in [
+        ("provider", &input.provider),
+        ("model", &input.model),
+        ("reasoning", &input.reasoning),
+        ("title", &input.title.as_ref().map(|t| t.trim().to_owned())),
+    ] {
+        if let Some(value) = value {
+            data[name] = json!(value);
+        }
+    }
+    let _ = record(m, parent, "child_request", data)?;
+    let answer = tokio::time::timeout(APP_WAIT, answer).await;
+    match answer {
+        Ok(Ok(Ok(thread))) => {
+            *APP_MISSED.lock().unwrap() = None;
+            Ok(Some(thread))
+        }
+        Ok(Ok(Err(error))) => Err(fail(
+            StatusCode::CONFLICT,
+            &format!(
+                "The child could not start in its own sandbox: {error}. Retry, or add --shared-sandbox to start it here."
+            ),
+        )),
+        // No answer in time: decide under the lock, since the app may be answering right now.
+        _ => {
+            let mut children = CHILDREN.lock().unwrap();
+            match children.get_mut(&slot) {
+                Some(Outcome::Started(thread, _)) => Ok(Some(thread.clone())),
+                Some(outcome) => {
+                    *outcome = Outcome::Here(Instant::now());
+                    *APP_MISSED.lock().unwrap() = Some(Instant::now());
+                    Ok(None)
+                }
+                None => Ok(None),
+            }
+        }
+    }
+}
+
+/// The app started the requested child, or says why it could not. A request that already ended the other way
+/// (the child runs in the parent's sandbox) or is unknown is refused, so the app cancels its child.
+async fn answer_child(
+    Path((session, id)): Path<(String, String)>,
+    Json(input): Json<ChildAnswer>,
+) -> Result<(StatusCode, Json<Value>), Failure> {
+    let accepted = Ok((StatusCode::ACCEPTED, Json(json!({"accepted":true}))));
+    let slot = format!("{session}/{id}");
+    let mut children = CHILDREN.lock().unwrap();
+    match children.remove(&slot) {
+        None => Err(fail(
+            StatusCode::NOT_FOUND,
+            "Unknown or expired child request",
+        )),
+        Some(Outcome::Waiting(reply)) => {
+            let result = match input.thread {
+                Some(thread) => {
+                    children.insert(slot, Outcome::Started(thread.clone(), Instant::now()));
+                    Ok(thread)
+                }
+                None => Err(input.error.unwrap_or_else(|| "unknown error".into())),
+            };
+            let _ = reply.send(result);
+            accepted
+        }
+        Some(outcome) => {
+            // The same answer again (say, after a lost response) is fine; anything else lost the race.
+            let same = matches!((&outcome, &input.thread), (Outcome::Started(started, _), Some(thread)) if started == thread);
+            children.insert(slot, outcome);
+            if same {
+                accepted
+            } else {
+                Err(fail(
+                    StatusCode::CONFLICT,
+                    "This child request already ended: the child runs in the parent's sandbox",
+                ))
+            }
+        }
+    }
+}
+
+/// `tell`, `stop` and `archive` for a child in its own sandbox, named by its thread ID: the app passes them on.
+fn own_sandbox_command(
+    m: &Manager,
+    parent: &str,
+    id: &str,
+    action: &str,
+    text: Option<&str>,
+) -> Option<Result<Json<Value>, Failure>> {
+    let own = id.strip_prefix("thr_").is_some_and(|key| {
+        !key.is_empty()
+            && key.len() <= 60
+            && key
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+    });
+    own.then(|| {
+        let mut data = json!({"id":id,"action":action});
+        if let Some(text) = text {
+            data["text"] = json!(text);
+        }
+        record(m, parent, "child_command", data)
+            .map(|_| Json(json!({"id":id,"state":"requested","note":OWN_COMMAND_NOTE})))
+    })
 }
 
 #[derive(Deserialize)]
@@ -265,6 +470,11 @@ async fn output(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, Failure> {
     let parent = caller(&m, peer, "thread output")?;
+    if id.starts_with("thr_") {
+        return Ok(Json(
+            json!({"id":id,"note":"This child runs in its own sandbox. Its replies arrive as messages when its turns end."}),
+        ));
+    }
     m.own_child(&parent, &id).map_err(session_failure)?;
     Ok(Json(
         m.children(&parent, Some(&id), true).await["children"][0].clone(),
@@ -278,10 +488,13 @@ async fn tell(
     Json(input): Json<Tell>,
 ) -> Result<Json<Value>, Failure> {
     let parent = caller(&m, peer, "thread tell")?;
-    m.own_child(&parent, &id).map_err(session_failure)?;
     if input.text.trim().is_empty() || input.text.len() > 32768 {
         return Err(fail(StatusCode::CONFLICT, "Use a message of 1-32768 bytes"));
     }
+    if let Some(answer) = own_sandbox_command(&m, &parent, &id, "tell", Some(&input.text)) {
+        return answer;
+    }
+    m.own_child(&parent, &id).map_err(session_failure)?;
     let request =
         random_key().map_err(|e| fail(StatusCode::SERVICE_UNAVAILABLE, &e.to_string()))?;
     match steer(&m, &id, &format!("{request}_steer"), &input.text)
@@ -343,6 +556,9 @@ async fn stop_child(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, Failure> {
     let parent = caller(&m, peer, "thread stop")?;
+    if let Some(answer) = own_sandbox_command(&m, &parent, &id, "stop", None) {
+        return answer;
+    }
     m.own_child(&parent, &id).map_err(session_failure)?;
     let request =
         random_key().map_err(|e| fail(StatusCode::SERVICE_UNAVAILABLE, &e.to_string()))?;
@@ -359,6 +575,9 @@ async fn archive_child(
     Path(id): Path<String>,
 ) -> Result<Json<Value>, Failure> {
     let parent = caller(&m, peer, "thread archive")?;
+    if let Some(answer) = own_sandbox_command(&m, &parent, &id, "archive", None) {
+        return answer;
+    }
     m.own_child(&parent, &id).map_err(session_failure)?;
     let request =
         random_key().map_err(|e| fail(StatusCode::SERVICE_UNAVAILABLE, &e.to_string()))?;
@@ -377,12 +596,14 @@ fn flag<'a>(words: &[&'a str], name: &str) -> Option<&'a str> {
 }
 
 async fn spawn_cli(words: &[&str]) -> io::Result<i32> {
-    // Local habits are harmless here: a child always runs in this cloud thread's sandbox.
+    // A child gets a sandbox of its own unless --shared-sandbox (ADR 0229); `--machine cloud` is a harmless Local habit.
     if flag(words, "--machine")
         .or(flag(words, "--host"))
         .is_some_and(|m| m != "cloud")
     {
-        eprintln!("Cloud threads start cloud children only, in this sandbox. Omit --machine.");
+        eprintln!(
+            "Cloud threads start cloud children only. Omit --machine; add --shared-sandbox to share this sandbox."
+        );
         return Ok(2);
     }
     let prompt = match (flag(words, "--prompt"), flag(words, "--prompt-file")) {
@@ -393,7 +614,7 @@ async fn spawn_cli(words: &[&str]) -> io::Result<i32> {
             return Ok(2);
         }
     };
-    let mut body = json!({"prompt":prompt});
+    let mut body = json!({"prompt":prompt,"shared":words.contains(&"--shared-sandbox")});
     for (name, key) in [
         ("--provider", "provider"),
         ("--model", "model"),
@@ -481,7 +702,7 @@ pub async fn cli(args: &[String]) -> io::Result<i32> {
         }
         _ => {
             println!(
-                "{USAGE}\nRenames, archives or changes the effort of this cloud thread, or starts, checks, stops and archives child threads in this sandbox."
+                "{USAGE}\nRenames, archives or changes the effort of this cloud thread, or starts, checks, stops and archives its child threads."
             );
             return Ok(if words.is_empty() { 0 } else { 2 });
         }

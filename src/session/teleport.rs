@@ -355,7 +355,10 @@ impl Manager {
                 );
             }
         } else if let Some(reasoning) = reasoning
-            && !runtime::PI_REASONING_LEVELS.contains(&reasoning)
+            && !match check.harness {
+                runtime::Kind::Pi => runtime::pi_reasoning_accepted(reasoning),
+                _ => runtime::PI_REASONING_LEVELS.contains(&reasoning),
+            }
         {
             let error = format!("Cloud {harness} does not support {reasoning} effort");
             return fail("model_unavailable", error, None);
@@ -432,7 +435,7 @@ impl Manager {
                 && matches!(manifest.harness, runtime::Kind::Codex | runtime::Kind::Pi)
             {
                 let valid = codex_model.map_or_else(
-                    || runtime::PI_REASONING_LEVELS.contains(&reasoning),
+                    || runtime::pi_reasoning_accepted(reasoning),
                     |model| {
                         model
                             .reasoning_levels

@@ -154,9 +154,13 @@ impl Policy {
                     || (previous == Level::Blocked && available <= self.resume_bytes)
             }
         };
+        // Low space ends a fifth above the warning line, so space hovering at the line
+        // (a build writing and deleting files) does not repeat the warning.
         if blocked {
             Level::Blocked
-        } else if available <= self.warning_bytes {
+        } else if available <= self.warning_bytes
+            || (previous != Level::Normal && available <= self.warning_bytes / 5 * 6)
+        {
             Level::LowSpace
         } else {
             Level::Normal
@@ -597,7 +601,10 @@ mod tests {
         .unwrap();
         for (available, before, expected) in [
             (20_000_000_000, Level::Normal, Level::Normal),
-            (5_000_000_001, Level::LowSpace, Level::Normal),
+            (5_000_000_001, Level::Normal, Level::Normal),
+            (5_000_000_001, Level::LowSpace, Level::LowSpace),
+            (6_000_000_000, Level::LowSpace, Level::LowSpace),
+            (6_000_000_001, Level::LowSpace, Level::Normal),
             (5_000_000_000, Level::Normal, Level::LowSpace),
             (4_999_999_999, Level::Normal, Level::LowSpace),
             (3_000_000_000, Level::LowSpace, Level::LowSpace),
@@ -611,7 +618,8 @@ mod tests {
             (512_000_000, Level::Normal, Level::Blocked),
             (0, Level::Normal, Level::Blocked),
             (5_000_000_000, Level::Blocked, Level::LowSpace),
-            (5_000_000_001, Level::Blocked, Level::Normal),
+            (5_000_000_001, Level::Blocked, Level::LowSpace),
+            (6_000_000_001, Level::Blocked, Level::Normal),
         ] {
             let level = policy.level(available, before, None);
             assert_eq!(level, expected, "{available} bytes, previously {before:?}");

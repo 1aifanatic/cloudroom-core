@@ -74,10 +74,10 @@ def control(url, body, method, headers, timeout=5):
         raise ControlError(error.code) from None
 
 
-def website(connection):
+def website(config, connection):
     base = connection.get('websiteUrl', 'https://www.cloudroom.dev').rstrip('/')
     url = urllib.parse.urlsplit(base)
-    if base != 'https://www.cloudroom.dev' and not (url.scheme == 'http' and url.hostname == '127.0.0.1' and url.port and not url.path and not url.query and not url.fragment and not url.username):
+    if base not in ('https://www.cloudroom.dev', config.get('website')) and not (url.scheme == 'http' and url.hostname == '127.0.0.1' and url.port and not url.path and not url.query and not url.fragment and not url.username):
         raise ValueError('Invalid managed preview service')
     return base
 
@@ -86,7 +86,7 @@ class Core:
     """The paired VM's core, or, with `url` and `token`, one awake cloud sandbox's core."""
     def __init__(self, config, url=None, token=None, thread=None):
         connection = private_json(config['connectionFile'])
-        self.connection = connection
+        self.config, self.connection = config, connection
         self.sandbox, self.thread = url is not None, thread
         self.url = (url or connection['url']).rstrip('/')
         parts = urllib.parse.urlsplit(self.url)
@@ -112,7 +112,7 @@ class Core:
             return
         uuid.UUID(account)
         credential = base64.b64encode((account + ':' + self.connection['token']).encode()).decode()
-        return self.fetch(website(self.connection) + '/api/desktop/previews', {}, None, {'Authorization': 'Basic ' + credential})
+        return self.fetch(website(self.config, self.connection) + '/api/desktop/previews', {}, None, {'Authorization': 'Basic ' + credential})
 
     def request(self, path, body=None, method=None):
         return self.fetch(self.url + '/v1/previews' + path, body, method, self.headers)
@@ -143,7 +143,7 @@ def cores(config):
             try:
                 uuid.UUID(account)
                 credential = base64.b64encode((account + ':' + token).encode()).decode()
-                listed = control(website(connection) + '/api/desktop/sandboxes', {'action': 'awake'}, 'POST', {'Authorization': 'Basic ' + credential})
+                listed = control(website(config, connection) + '/api/desktop/sandboxes', {'action': 'awake'}, 'POST', {'Authorization': 'Basic ' + credential})
                 AWAKE['list'] = [(entry['origin'], entry['token'], entry.get('thread')) for entry in listed['sandboxes']]
             except (OSError, ValueError, KeyError, TypeError):
                 pass  # Keep the last list; sandboxes are asked again shortly.
@@ -517,6 +517,18 @@ def mac_level(config):
 # Each Mac command also goes to the website's Jev check (ADR 0224). It runs beside the job and never delays it:
 # at most four reports in flight, a repeated command is skipped for an hour, and failures are dropped.
 REVIEWS = {'sent': {}, 'lock': threading.Lock(), 'slots': threading.BoundedSemaphore(4)}
+SCRIPT_TYPES = ('.sh', '.bash', '.zsh', '.py', '.js', '.mjs', '.cjs', '.ts', '.rb', '.pl')
+
+
+def script_of(job):
+    """A script file the command runs, often one the agent just pushed to /tmp, so the check judges what really runs."""
+    folder = Path.home() / os.path.expanduser(job.get('cwd') or '~')
+    for word in job['command'].split():
+        path = folder / os.path.expanduser(word.strip('\'"();&|'))
+        if path.suffix in SCRIPT_TYPES and not str(path).startswith(('/Volumes/', '/Network/')) and path.is_file():
+            with open(path, errors='replace') as file:
+                return file.read(8000)
+    return None
 
 
 def review(core, job, level):
@@ -534,7 +546,9 @@ def review(core, job, level):
         try:
             credential = base64.b64encode((account + ':' + token).encode()).decode()
             body = {'command': job['command'][:8000], 'cwd': job.get('cwd'), 'write': bool(job.get('write')), 'level': level, 'thread': core.thread}
-            control(website(core.connection) + '/api/desktop/mac-reviews', body, 'POST', {'Authorization': 'Basic ' + credential})
+            with contextlib.suppress(OSError, ValueError):
+                body['script'] = script_of(job)
+            control(website(core.config, core.connection) + '/api/desktop/mac-reviews', body, 'POST', {'Authorization': 'Basic ' + credential})
         except (OSError, ValueError, KeyError, TypeError):
             pass
         finally:
@@ -899,10 +913,13 @@ def configure(folder, connection_file, activate, allow_private, mac_access=None,
     # App updates replace these files; restart so macOS can still name the helper for Desktop/Documents/Downloads access.
     # restart: each app launch also restarts the helper so newly granted Full Disk Access applies.
     binary = [os.stat(path).st_ino for path in (launcher, sys.executable) if path]
+    # A self-hosted website (the app's CLOUDROOM_WEBSITE_URL); launchd starts the helper without the app's environment.
+    trusted = os.environ.get('CLOUDROOM_WEBSITE_URL', '').strip().rstrip('/')
+    trusted = trusted if trusted.startswith('https://') else None
     if (activate and not restart and old and old['binding'] == binding and old.get('connectionFile') == str(connection_file)
             and old.get('allowPrivateSsh', False) == allow_private and old.get('macAccess') == mac_access
             and old.get('launcher') == launcher and old.get('binary') == binary and old.get('ownThreads', False) == own
-            and target.is_file() and target.read_bytes() == source.read_bytes()):
+            and old.get('website') == trusted and target.is_file() and target.read_bytes() == source.read_bytes()):
         check = ['systemctl', '--user', 'is-active', '--quiet', label(folder) + '.service'] if sys.platform.startswith('linux') else ['launchctl', 'print', f'gui/{os.getuid()}/' + label(folder)]
         active = subprocess.run(check, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if active.returncode == 0:
@@ -913,7 +930,8 @@ def configure(folder, connection_file, activate, allow_private, mac_access=None,
         temporary = folder / 'client.pending'
         temporary.write_bytes(source.read_bytes()); temporary.chmod(0o600); temporary.replace(target)
     config = {'device': old['device'] if old else uuid.uuid4().hex, 'binding': binding, 'connectionFile': str(connection_file),
-              'allowPrivateSsh': allow_private, 'macAccess': mac_access, 'launcher': launcher, 'binary': binary, **({'ownThreads': True} if own else {})}
+              'allowPrivateSsh': allow_private, 'macAccess': mac_access, 'launcher': launcher, 'binary': binary, **({'ownThreads': True} if own else {}),
+              **({'website': trusted} if trusted else {})}
     save(folder / 'config.json', config)
     identity(folder)
     if activate:

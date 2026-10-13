@@ -167,7 +167,8 @@ impl Manager {
                     }
                 }
                 runtime::Kind::Pi => {
-                    harness["reasoning_levels"] = json!(runtime::PI_REASONING_LEVELS);
+                    harness["reasoning_levels"] =
+                        json!([runtime::PI_REASONING_LEVELS, &["max"]].concat());
                     harness["provider_selection"] = json!(true);
                     harness["steer"] = json!(true);
                     harness["compact"] = json!(true);

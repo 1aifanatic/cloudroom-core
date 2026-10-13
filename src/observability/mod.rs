@@ -28,6 +28,7 @@ use tokio::sync::{mpsc, watch};
 const CAPACITY: usize = 1024;
 const LOCAL_BYTES: u64 = 8 * 1024 * 1024;
 const SUMMARY_INTERVAL: Duration = Duration::from_secs(60);
+const CPU_INTERVAL: Duration = Duration::from_secs(60);
 const SLOW_API_MS: u64 = 1000;
 const PRUNE_BATCH: i64 = 1000;
 const STDERR_CAPACITY: usize = 32;
@@ -270,6 +271,7 @@ impl Observability {
         let mut pending = VecDeque::new();
         let mut sampler = system::Sampler::default();
         let mut sample_at = Instant::now();
+        let (mut cpu_at, mut busy) = (Instant::now(), false);
         let mut summaries = BTreeMap::new();
         let mut summary_at = Instant::now() + SUMMARY_INTERVAL;
         let mut prune_at = Instant::now();
@@ -293,7 +295,13 @@ impl Observability {
             }
             if !stopping && Instant::now() >= sample_at {
                 let mut resources = sampler.sample(&config).await;
-                resources.agents = Some(agents());
+                let counts = agents();
+                busy |= counts.working > 0 || counts.queued > 0;
+                if Instant::now() >= cpu_at {
+                    resources.cpu_minute = sampler.minute(busy);
+                    (cpu_at, busy) = (Instant::now() + CPU_INTERVAL, false);
+                }
+                resources.agents = Some(counts);
                 self.resources
                     .send_replace((Some(now_ms()), resources.dashboard()));
                 batch.push(self.make_record(Signal::Resources(resources)));

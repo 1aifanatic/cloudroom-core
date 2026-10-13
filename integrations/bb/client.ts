@@ -756,6 +756,11 @@ export class CloudroomClient {
     await this.#json(`${sessionPath(sessionId)}/secrets/${encodeURIComponent(id)}`, values ? { values } : {});
   }
 
+  /** Answers an agent's request for a child in its own sandbox: the child thread started, or why it could not. */
+  async answerChild(sessionId: string, id: string, answer: { thread: string } | { error: string }): Promise<void> {
+    await this.#json(`${sessionPath(sessionId)}/children/${encodeURIComponent(id)}`, answer);
+  }
+
   close(sessionId: string, id: string) {
     return this.#command(
       `${sessionPath(sessionId)}/close`,

@@ -10,7 +10,7 @@ use std::{
 };
 use tokio::process::Command;
 
-const INSTRUCTIONS: &str = "Cloudroom owns this cloud session. Ask clarifying questions in ordinary chat, not interactive tools. Start child threads with `cloudroom thread spawn` (any harness and model; see `cloudroom thread --help`); each runs in this sandbox, shows under this thread, and Cloudroom messages you when it finishes. Do not use native subagents, workflows, or agent teams. Fast mode is unavailable. Rewinding changes conversation history only, never files.";
+const INSTRUCTIONS: &str = "Cloudroom owns this cloud session. Ask clarifying questions in ordinary chat, not interactive tools. Start child threads with `cloudroom thread spawn` (any harness and model; see `cloudroom thread --help`); each gets its own sandbox with a copy of your code (add `--shared-sandbox` to run it in yours), shows under this thread, and Cloudroom messages you when it finishes. Do not use native subagents, workflows, or agent teams. Fast mode is unavailable. Rewinding changes conversation history only, never files.";
 
 fn uuid() -> io::Result<String> {
     let mut bytes = [0u8; 16];
