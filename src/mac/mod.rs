@@ -251,6 +251,18 @@ async fn report(
     RoutePath(id): RoutePath<String>,
     Json(input): Json<Report>,
 ) -> Result<Json<Value>> {
+    // Any answer, even one too late for its job, shows the Mac is awake. A late answer must not leave
+    // `mac status` offline until some other job succeeds: agents that wait on status would never send one.
+    if let Some(h) = m
+        .mac
+        .helper
+        .lock()
+        .unwrap()
+        .as_mut()
+        .filter(|h| h.device == input.device)
+    {
+        h.stale = false;
+    }
     let mut jobs = m.mac.jobs.lock().unwrap();
     let job = jobs
         .get_mut(&id)
@@ -293,16 +305,6 @@ async fn report(
         _ => return Err(conflict("Invalid Mac job report")),
     }
     drop(jobs);
-    if let Some(h) = m
-        .mac
-        .helper
-        .lock()
-        .unwrap()
-        .as_mut()
-        .filter(|h| h.device == input.device)
-    {
-        h.stale = false;
-    }
     m.mac.touch();
     Ok(Json(json!({"accepted":true})))
 }
@@ -404,7 +406,7 @@ async fn local_run(
             if !connected {
                 cancel.armed = false;
                 return Ok(Json(json!({"job":id,"state":"unknown",
-                    "message":format!("The Mac disconnected while this command was running. It may still finish; check later with: cloudroom mac result {id}")})));
+                    "message":format!("The Mac disconnected while this command was running. It may still finish; check later with: room-cli mac result {id}")})));
             }
         }
         tokio::select! {
@@ -649,11 +651,11 @@ pub async fn cli(args: &[String]) -> io::Result<i32> {
         socket = args.remove(1);
         args.remove(0);
     }
-    let usage = "cloudroom mac run [--cwd DIR] [--stdin] [--write] COMMAND
-cloudroom mac pull MAC_PATH [VM_FOLDER]
-cloudroom mac push VM_PATH [MAC_FOLDER]
-cloudroom mac result JOB
-cloudroom mac status
+    let usage = "room-cli mac run [--cwd DIR] [--stdin] [--write] COMMAND
+room-cli mac pull MAC_PATH [VM_FOLDER]
+room-cli mac push VM_PATH [MAC_FOLDER]
+room-cli mac result JOB
+room-cli mac status
 Runs on the user's paired Mac as the user, in their home folder by default.
 Add --write when a command changes the Mac. Unless the user gives Full access,
 other commands run read-only, and --write needs their approval.";

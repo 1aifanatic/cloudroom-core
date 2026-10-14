@@ -154,7 +154,7 @@ const FINISHED: [&str; 5] = [
 /// How much of a child's reply its parent's notice quotes, as for Local threads.
 const NOTICE_REPLY_CHARS: usize = 4000;
 
-/// A child thread the parent does not wait for: `cloudroom thread spawn`, or the app's API.
+/// A child thread the parent does not wait for: `room-cli thread spawn`, or the app's API.
 pub struct Spawn {
     pub harness: Option<runtime::Kind>,
     pub model: Option<String>,
@@ -263,7 +263,7 @@ fn notice(
         "completed" => {
             let reply = reply.filter(|r| !r.trim().is_empty()).map_or(
                 format!(
-                    "Its reply is in its thread; read it with `cloudroom thread output {child}`."
+                    "Its reply is in its thread; read it with `room-cli thread output {child}`."
                 ),
                 |r| {
                     let mut text: String = r.trim().chars().take(NOTICE_REPLY_CHARS).collect();
@@ -288,7 +288,7 @@ fn notice(
                 format!(" Cause: {}.{oom} Its turn did not finish; resend the task if it still matters.", e.trim().trim_end_matches('.'))
             });
             format!(
-                "[Cloudroom] Child thread {name} failed or its outcome is uncertain.{cause} Check it with `cloudroom thread output {child}` before deciding next steps."
+                "[Cloudroom] Child thread {name} failed or its outcome is uncertain.{cause} Check it with `room-cli thread output {child}` before deciding next steps."
             )
         }
     }
@@ -682,7 +682,7 @@ impl Manager {
         });
     }
 
-    /// The caller's own child or a child under it, for `cloudroom thread output|tell|stop|archive`.
+    /// The caller's own child or a child under it, for `room-cli thread output|tell|stop|archive`.
     pub(crate) fn own_child(&self, parent: &str, child: &str) -> Result<()> {
         let local = self.local.lock().unwrap();
         match local.sessions.get(child) {

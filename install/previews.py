@@ -109,9 +109,10 @@ Match all
                        'import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.mkdir(parents=True,exist_ok=True); f=p/"SKILL.md"; data=sys.stdin.read(); f.write_text(data) if not f.exists() else None',
                        str(Path(agent.pw_dir) / base / 'skills' / name)]
             subprocess.run(command, input=skill, text=True, check=True)
-    link = Path('/usr/local/bin/cloudroom')
-    if not link.exists() and not link.is_symlink():
-        link.symlink_to(binary)
+    # `room-cli` is the agent CLI's name (ADR 0240); `cloudroom` is the old one.
+    for link in [Path('/usr/local/bin/cloudroom'), Path('/usr/local/bin/room-cli')]:
+        if not link.exists() and not link.is_symlink():
+            link.symlink_to(binary)
     print('Preview SSH access configured. The desktop supplies its own public key through the core API.')
 
 

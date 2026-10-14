@@ -659,8 +659,13 @@ class MacJobs:
                        MAC_POST_SECONDS)
         with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
             review(core, job, mac_level(self.enabled() or {}))
-        with contextlib.suppress(OSError, ValueError):
+        try:
             post({'state': 'running'})
+        except ControlError as error:
+            if error.code in (401, 403, 404, 409):
+                return  # Core already gave up on this job and told the agent it did not run.
+        except (OSError, ValueError):
+            pass
         result = {'state': 'done', 'code': 127, 'stdout': '', 'stderr': '', 'truncated': False}
         refused = self.refusal(core, job)
         sandboxed = not refused and not job.get('write') and mac_level(self.enabled() or {}) != 'full'
@@ -696,7 +701,7 @@ class MacJobs:
                 self.running.pop(job['id'], None)
             if sandboxed and result['code'] and b'not permitted' in output['stderr'].lower():
                 output['stderr'] += (b'\nCloudroom: Mac access is Read-only, so commands cannot change the Mac.\n' if mac_level(self.enabled() or {}) == 'read-only'
-                                     else b'\nCloudroom: this ran read-only. To change the Mac, rerun with `cloudroom mac run --write ...`; the user approves it first.\n')
+                                     else b'\nCloudroom: this ran read-only. To change the Mac, rerun with `room-cli mac run --write ...`; the user approves it first.\n')
             result['truncated'] = any(len(value) > MAC_LIMIT for value in output.values())
             result.update({name: bytes(value[:MAC_LIMIT]).hex() for name, value in output.items()})
         # The result survives disconnects: retry until the VM accepts it, forgets the job, or an hour passes.
@@ -887,7 +892,9 @@ def launch(folder, stop=False):
                     time.sleep(.1)
         path.unlink(missing_ok=True); return
     command = [sys.executable, '-B', '-E', '-s', str(folder / 'client.py'), 'run', str(folder)]
-    job = {'Label': name, 'ProgramArguments': command, 'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': 5, 'ProcessType': 'Background'}
+    # Not ProcessType Background: macOS then throttles the helper's CPU and network, and on a busy Mac it misses
+    # Core's Mac job deadlines (30 s to attach, 10 s to answer), so cloud agents see 'Mac unavailable'.
+    job = {'Label': name, 'ProgramArguments': command, 'RunAtLoad': True, 'KeepAlive': True, 'ThrottleInterval': 5}
     launcher = private_json(folder / 'config.json').get('launcher')
     if launcher:
         job.update(ProgramArguments=[launcher, '-e', LAUNCHER, *command], EnvironmentVariables={'ELECTRON_RUN_AS_NODE': '1'})

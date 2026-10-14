@@ -16,10 +16,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{io, sync::Arc};
 
-const USAGE: &str = "cloudroom automation create --name NAME --prompt TEXT|--prompt-file PATH (--cron 'MIN HOUR DAY MONTH WEEKDAY' [--timezone ZONE] | --at ISO_TIME | --in 30m)
-cloudroom automation list
-cloudroom automation update ID [--name NAME] [--prompt TEXT] [--cron EXPR [--timezone ZONE] | --at ISO_TIME | --in 30m]
-cloudroom automation pause|resume|run|delete ID
+const USAGE: &str = "room-cli automation create --name NAME --prompt TEXT|--prompt-file PATH (--cron 'MIN HOUR DAY MONTH WEEKDAY' [--timezone ZONE] | --at ISO_TIME | --in 30m)
+room-cli automation list
+room-cli automation update ID [--name NAME] [--prompt TEXT] [--cron EXPR [--timezone ZONE] | --at ISO_TIME | --in 30m]
+room-cli automation pause|resume|run|delete ID
 Re-prompts this Cloud thread on a schedule, even while the user's Mac is off. Cloudroom fills in the next run within a minute; check `list` for it or an error.";
 const MAX_PROMPT: usize = 32_000;
 
@@ -43,7 +43,7 @@ pub struct Body {
     delay: Option<String>,
 }
 
-/// Served on the agent-only socket that `cloudroom mac` also uses.
+/// Served on the agent-only socket that `room-cli mac` also uses.
 pub(crate) fn agent_routes() -> Router<Arc<Manager>> {
     Router::new().route("/automation", post(automation))
 }
@@ -58,7 +58,7 @@ async fn automation(
     let Some(api) = &m.history.api else {
         return Err(fail(
             StatusCode::CONFLICT,
-            "Run cloudroom automation from a Cloudroom cloud thread",
+            "Run room-cli automation from a Cloudroom cloud thread",
         ));
     };
     // The website finds the thread from this Core's own sign-in; the session is the agent asking.
@@ -147,7 +147,7 @@ fn delay(value: &str) -> Option<String> {
     (count.parse::<u32>().ok()? > 0).then(|| format!("{count} {unit}"))
 }
 
-/// `cloudroom automation ...`, the cloud twin of `room-cli automation create --cloud`.
+/// `room-cli automation ...` in Cloud threads; on the Mac, `room-cli automation create --cloud` does the same.
 pub async fn cli(args: &[String]) -> io::Result<i32> {
     let words: Vec<&str> = args
         .iter()

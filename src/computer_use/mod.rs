@@ -1,4 +1,4 @@
-//! `cloudroom computer-use`: desktop apps on a virtual Linux screen in a Cloud sandbox.
+//! `room-cli computer-use`: desktop apps on a virtual Linux screen in a Cloud sandbox.
 //! The sandbox image installs Xvfb, AT-SPI and a pinned Cua Driver (web/computer-use.sh).
 //! Everything here runs as the agent and starts lazily on the first call. The sandbox is the
 //! boundary, so apps need no per-app approval here (docs/scopes/computer-use.md).
@@ -72,7 +72,7 @@ const SESSION_TOOLS: &[&str] = &[
     "verify_state",
 ];
 const BLOCKED_TOOLS: &[&str] = &["set_config", "install_extension", "check_for_update"];
-const USAGE: &str = "Usage: cloudroom computer-use status | start | launch <command> [args...] | tools [<tool>] | call <tool> ['<json-args>']";
+const USAGE: &str = "Usage: room-cli computer-use status | start | launch <command> [args...] | tools [<tool>] | call <tool> ['<json-args>']";
 
 type Error = Box<dyn std::error::Error>;
 
@@ -179,7 +179,7 @@ fn ensure_desktop() -> Result<String, Error> {
     Ok(socket)
 }
 
-/// One `cloudroom computer-use call`, for product diagnostics. Never screen content or typed text.
+/// One `room-cli computer-use call`, for product diagnostics. Never screen content or typed text.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Event {
@@ -190,7 +190,7 @@ struct Event {
     ms: u64,
 }
 
-/// Served on the agent-only socket that `cloudroom mac` also uses.
+/// Served on the agent-only socket that `room-cli mac` also uses.
 pub(crate) fn agent_routes() -> Router<Arc<Manager>> {
     Router::new().route("/computer-use/event", post(event))
 }

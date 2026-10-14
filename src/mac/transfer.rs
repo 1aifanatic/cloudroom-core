@@ -1,4 +1,4 @@
-//! `cloudroom mac pull` and `push`. Up to 16 MiB still travels in one Mac job, as before. Bigger copies, up to
+//! `room-cli mac pull` and `push`. Up to 16 MiB still travels in one Mac job, as before. Bigger copies, up to
 //! 2 GiB, go in 8 MiB pieces through the same jobs: staged in a Mac temp folder, then checked with SHA-256.
 //! Every piece of a copy runs the same command, with its number in stdin, so the Mac helper's Jev check
 //! (ADR 0224) reviews one command per copy, not one per piece.

@@ -319,7 +319,7 @@ impl Previews {
         });
         Ok(
             json!({"port":port,"generation":entry.generation,"state":if ready.is_some() {"ready"} else if error.is_some() {"error"} else {"pending"},
-            "url":url,"message":error.map(String::as_str).unwrap_or(if ready.is_some() {"Preview connected"} else {"Waiting for the paired Mac; check again with cloudroom preview status"})}),
+            "url":url,"message":error.map(String::as_str).unwrap_or(if ready.is_some() {"Preview connected"} else {"Waiting for the paired Mac; check again with room-cli preview status"})}),
         )
     }
     pub fn list(&self) -> Result<Value> {
@@ -811,7 +811,7 @@ pub async fn cli(args: &[String]) -> io::Result<()> {
     };
     if args.is_empty() || args[0] == "--help" {
         println!(
-            "cloudroom preview PORT\ncloudroom preview status [PORT]\ncloudroom preview close PORT\nReturns JSON. Only state=ready contains a usable local URL. Local threads use their ordinary localhost server."
+            "room-cli preview PORT\nroom-cli preview status [PORT]\nroom-cli preview close PORT\nReturns JSON. Only state=ready contains a usable local URL. Local threads use their ordinary localhost server."
         );
         return Ok(());
     }

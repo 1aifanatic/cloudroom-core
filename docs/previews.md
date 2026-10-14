@@ -1,14 +1,14 @@
 # Localhost cloud previews
 
-An agent starts an HTTP development server, runs `cloudroom preview PORT`, and posts the returned URL. No GUI button, public hosting route, or inference integration is needed. Local threads continue using ordinary localhost servers.
+An agent starts an HTTP development server, runs `room-cli preview PORT`, and posts the returned URL. No GUI button, public hosting route, or inference integration is needed. Local threads continue using ordinary localhost servers.
 
 ## Commands
 
 ```sh
-cloudroom preview 3000
-cloudroom preview status 3000
-cloudroom preview status
-cloudroom preview close 3000
+room-cli preview 3000
+room-cli preview status 3000
+room-cli preview status
+room-cli preview close 3000
 ```
 
 Commands return JSON. Only `state: "ready"` includes a current laptop URL, such as `http://p3000-1234abcd.localhost:3000`. The local port can differ when occupied. Registration retries reuse the preview; close/reopen creates a new generation. Close removes registration and disconnects the dedicated preview SSH connections, never the development server. Other previews reconnect automatically. The agent owns the server's lifecycle.

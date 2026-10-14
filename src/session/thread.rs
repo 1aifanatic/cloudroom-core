@@ -20,16 +20,16 @@ use std::{
 };
 use tokio::sync::oneshot;
 
-const USAGE: &str = "cloudroom thread update --self --title TITLE
-cloudroom thread update --self --reasoning-level LEVEL
-cloudroom thread archive --self
-cloudroom thread stop --self
-cloudroom thread spawn --provider codex|claude-code|pi|opencode|hermes [--model MODEL] [--reasoning-level LEVEL] [--title TITLE] [--shared-sandbox] --prompt TEXT|--prompt-file PATH
-cloudroom thread list [--include-archived]
-cloudroom thread output CHILD_ID
-cloudroom thread tell CHILD_ID TEXT
-cloudroom thread stop CHILD_ID
-cloudroom thread archive CHILD_ID";
+const USAGE: &str = "room-cli thread update --self --title TITLE
+room-cli thread update --self --reasoning-level LEVEL
+room-cli thread archive --self
+room-cli thread stop --self
+room-cli thread spawn --provider codex|claude-code|pi|opencode|hermes [--model MODEL] [--reasoning-level LEVEL] [--title TITLE] [--shared-sandbox] --prompt TEXT|--prompt-file PATH
+room-cli thread list [--include-archived]
+room-cli thread output CHILD_ID
+room-cli thread tell CHILD_ID TEXT
+room-cli thread stop CHILD_ID
+room-cli thread archive CHILD_ID";
 const SPAWN_NOTE: &str = "Started in this sandbox and folder. Keep working: Cloudroom sends you a message each time it finishes a turn.";
 const OWN_NOTE: &str = "Started in its own sandbox with a copy of your code (commits and uncommitted changes), on its own branch. It doesn't see your later edits; share work through Git. Use this ID with tell, stop and archive. Keep working: Cloudroom sends you a message each time it finishes a turn.";
 const FALLBACK_NOTE: &str = " The user's Cloudroom app didn't start it in its own sandbox (it's probably closed), so it runs here.";
@@ -104,7 +104,7 @@ pub fn routes() -> Router<Arc<Manager>> {
     Router::new().route("/v1/sessions/{id}/children/{request}", post(answer_child))
 }
 
-/// Served on the agent-only socket that `cloudroom mac` also uses.
+/// Served on the agent-only socket that `room-cli mac` also uses.
 pub(crate) fn agent_routes() -> Router<Arc<Manager>> {
     Router::new()
         .route("/title", post(rename))
@@ -587,7 +587,7 @@ async fn archive_child(
     record(&m, &id, "archive", json!({"id":id,"archived":true}))
 }
 
-/// Flag value after `name`, for `cloudroom thread spawn`.
+/// Flag value after `name`, for `room-cli thread spawn`.
 fn flag<'a>(words: &[&'a str], name: &str) -> Option<&'a str> {
     words
         .iter()
@@ -631,7 +631,7 @@ async fn spawn_cli(words: &[&str]) -> io::Result<i32> {
     Ok(0)
 }
 
-/// The same `cloudroom thread ... --self` forms local threads use. `--json` is accepted and
+/// The same `room-cli thread ... --self` forms local threads use. `--json` is accepted and
 /// ignored because the answer is always JSON.
 pub async fn cli(args: &[String]) -> io::Result<i32> {
     let words: Vec<&str> = args

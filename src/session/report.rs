@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{io, sync::Arc};
 
-const USAGE: &str = "cloudroom feedback MESSAGE
+const USAGE: &str = "room-cli feedback MESSAGE
 Sends David, Cloudroom's founder, a bug, friction, or idea: what you did, what happened, and the exact error. Never include secrets, personal data, or the user's code.";
 
 #[derive(Deserialize)]
@@ -24,7 +24,7 @@ pub struct Report {
     message: String,
 }
 
-/// Served on the agent-only socket that `cloudroom mac` also uses.
+/// Served on the agent-only socket that `room-cli mac` also uses.
 pub(crate) fn agent_routes() -> Router<Arc<Manager>> {
     Router::new().route("/report", post(report))
 }
@@ -66,7 +66,7 @@ async fn report(
     Ok(Json(json!({"sent":true})))
 }
 
-/// `cloudroom feedback MESSAGE` (old name: `report`), the cloud twin of `room-cli feedback`.
+/// `room-cli feedback MESSAGE` (old name: `report`) in Cloud threads; the Mac's `room-cli feedback` does the same there.
 pub async fn cli(args: &[String]) -> io::Result<i32> {
     let [message] = args else {
         println!("{USAGE}");

@@ -108,7 +108,7 @@ pub struct Session {
     pub checkpoint: Option<Value>,
     pub rewind_request: Option<String>,
     pub parent_session: Option<String>,
-    // Archived by `cloudroom thread archive`; `thread list` hides it unless asked.
+    // Archived by `room-cli thread archive`; `thread list` hides it unless asked.
     #[serde(default)]
     pub archived: bool,
     pub reasoning: Option<String>,

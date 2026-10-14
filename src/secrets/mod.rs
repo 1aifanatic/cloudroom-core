@@ -25,7 +25,7 @@ use tokio::sync::oneshot;
 
 pub const SKILL: &str = include_str!("cloud-secrets/SKILL.md");
 const USAGE: &str =
-    "cloudroom secret request NAME... --write-env PATH [--purpose TEXT] [--describe NAME TEXT]...";
+    "room-cli secret request NAME... --write-env PATH [--purpose TEXT] [--describe NAME TEXT]...";
 const VALUE_LIMIT: usize = 16 * 1024;
 type Values = BTreeMap<String, String>;
 
@@ -98,7 +98,7 @@ pub fn routes() -> Router<Arc<Manager>> {
         post(answer).layer(DefaultBodyLimit::max(1024 * 1024)),
     )
 }
-/// Served on the agent-only socket that `cloudroom mac` also uses.
+/// Served on the agent-only socket that `room-cli mac` also uses.
 pub(crate) fn agent_routes() -> Router<Arc<Manager>> {
     Router::new().route("/secrets", post(ask))
 }
@@ -156,7 +156,7 @@ async fn ask(
         .and_then(|pid| m.harness_session(&ancestors(pid)))
         .ok_or(Failure(
             StatusCode::CONFLICT,
-            "Run cloudroom secret from a Cloudroom cloud thread".into(),
+            "Run room-cli secret from a Cloudroom cloud thread".into(),
         ))?;
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -231,7 +231,7 @@ async fn answer(
     Ok((StatusCode::ACCEPTED, Json(json!({"accepted":true}))))
 }
 
-/// `cloudroom secret request`: asks the user through the app, then writes the dotenv file itself.
+/// `room-cli secret request`: asks the user through the app, then writes the dotenv file itself.
 pub async fn cli(args: &[String]) -> io::Result<i32> {
     if args.first().map(String::as_str) != Some("request") {
         println!("{USAGE}");

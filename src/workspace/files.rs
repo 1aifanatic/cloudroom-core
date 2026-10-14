@@ -1,4 +1,4 @@
-//! `cloudroom files wait`: a new Cloud thread's agent waits for its project copy itself (ADR 0209).
+//! `room-cli files wait`: a new Cloud thread's agent waits for its project copy itself (ADR 0209).
 //! The Mac app writes `<project folder>.cloudroom-files` next to the folder, so Git never sees it:
 //! `copying`, then `ready` or `failed: REASON`.
 use std::{
@@ -7,7 +7,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-const USAGE: &str = "cloudroom files wait
+const USAGE: &str = "room-cli files wait
 Waits until Cloudroom finishes copying this project into the sandbox, up to 10 minutes. Returns at once if no copy is running.";
 const FAILURE_NOTE: &str = ".cloudroom/project-copy-failed.txt";
 const POLL: Duration = Duration::from_secs(2);
@@ -59,7 +59,7 @@ async fn wait(cwd: &Path) -> io::Result<i32> {
             (Some(_), _) => {}
             (None, _) if start.elapsed() >= GRACE || !looks_empty(cwd) => {
                 println!(
-                    "No project copy is running. If files are missing, the project may be on the user's Mac: pull what you need with `cloudroom mac pull`."
+                    "No project copy is running. If files are missing, the project may be on the user's Mac: pull what you need with `room-cli mac pull`."
                 );
                 return Ok(0);
             }
@@ -67,7 +67,7 @@ async fn wait(cwd: &Path) -> io::Result<i32> {
         }
         if start.elapsed() >= LIMIT {
             println!(
-                "The project is still copying after 10 minutes. Work with the files that are here, or pull what you need from the user's Mac with `cloudroom mac pull`."
+                "The project is still copying after 10 minutes. Work with the files that are here, or pull what you need from the user's Mac with `room-cli mac pull`."
             );
             return Ok(1);
         }

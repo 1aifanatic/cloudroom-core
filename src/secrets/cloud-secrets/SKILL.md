@@ -5,12 +5,12 @@ description: 'Ask the user for API keys, tokens, or other credentials from a Clo
 
 # Request secrets securely
 
-Use `cloudroom secret request` when the user needs to supply a credential. Never ask the user to paste a secret into chat.
+Use `room-cli secret request` when the user needs to supply a credential. Never ask the user to paste a secret into chat.
 
 Batch every known variable into one request. Check documentation or `.env.example` for names, but never read or print an existing secret-bearing env file.
 
 ```bash
-cloudroom secret request OPENAI_API_KEY RESEND_API_KEY \
+room-cli secret request OPENAI_API_KEY RESEND_API_KEY \
   --purpose "Configure application credentials" \
   --describe OPENAI_API_KEY "OpenAI API key used by the server" \
   --describe RESEND_API_KEY "Resend API key used for transactional email" \

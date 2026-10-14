@@ -124,7 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     // The service starts without arguments; anything else is a mistyped agent command.
     if let Some(command) = args.first() {
-        let commands = "Commands: cloudroom thread, automation, mac, secret, files, preview, computer-use, feedback. Add --help to any of them.";
+        let commands = "Commands: room-cli thread, automation, mac, secret, files, preview, computer-use, feedback. Add --help to any of them. Other threads, projects, and settings live on the user's Mac: see the room-cli skill.";
         if matches!(command.as_str(), "--help" | "-h" | "help") {
             println!("{commands}");
             return Ok(());
