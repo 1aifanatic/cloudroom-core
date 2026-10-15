@@ -248,6 +248,25 @@ class ReplayTests(unittest.TestCase):
     def start(self):
         self.service = Service(self.env, self.root / "service.log").start()
 
+    def test_session_lists_order_by_activity_before_bookkeeping(self):
+        for sid, timestamp in [('older', 100), ('newer', 200)]:
+            path = self.append(sid, {'delta': sid})
+            record = json.loads(path.read_text())
+            record['timestamp_ms'] = timestamp
+            path.write_text(json.dumps(record))
+        # Closing or recovering an old session must not promote it above active work.
+        for sid in ['newer', 'older', 'no-activity']:
+            path = self.append(sid, {'state': 'closed'})
+            record = json.loads(path.read_text())
+            record.update(kind='state', timestamp_ms=300)
+            path.write_text(json.dumps(record))
+        self.start()
+        listed = self.service.request('GET', '/v1/sessions')['sessions']
+        dashboard = self.service.request('GET', '/v1/dashboard')['sessions']
+        self.assertEqual([s['session_id'] for s in listed], ['newer', 'older', 'no-activity'])
+        self.assertEqual([s['id'] for s in dashboard], ['newer', 'older', 'no-activity'])
+        self.assertEqual([s['last_activity_ms'] for s in listed], [200, 100, None])
+
     def test_codex_login_is_private_idempotent_cancellable_and_verified(self):
         from workspaces import WorkspaceTests
         WorkspaceTests.api(self)

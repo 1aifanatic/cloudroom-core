@@ -7,7 +7,7 @@ impl Manager {
         let storage = self.storage.snapshot();
         let local = self.local.lock().unwrap();
         let mut sessions: Vec<_> = local.sessions.values().collect();
-        sessions.sort_unstable_by_key(|s| std::cmp::Reverse(s.last_sequence));
+        sessions.sort_unstable_by_key(|s| std::cmp::Reverse((s.last_activity, s.last_sequence)));
         // Only a safe summary leaves this endpoint, never receipts, prompts or native records.
         let summaries: Vec<_> = sessions
             .iter()
@@ -41,7 +41,7 @@ impl Manager {
     pub fn list_sessions(&self) -> Value {
         let local = self.local.lock().unwrap();
         let mut sessions: Vec<_> = local.sessions.values().collect();
-        sessions.sort_unstable_by_key(|s| std::cmp::Reverse(s.last_sequence));
+        sessions.sort_unstable_by_key(|s| std::cmp::Reverse((s.last_activity, s.last_sequence)));
         let summaries: Vec<_> = sessions
             .iter()
             .take(1000)
