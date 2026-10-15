@@ -548,6 +548,7 @@ impl IntoResponse for session::Error {
                 "attachment_too_large"
             }
             "request_id already has different content"
+            | "upload part has different content"
             | "session already exists"
             | "saved session has no matching receipt" => "request_conflict",
             "agent setup is incomplete" | "harness is not configured" => "harness_not_configured",
@@ -1317,8 +1318,8 @@ fn attach_part(
     Ok((bytes.len(), (bytes.len() == total).then(|| bytes.clone())))
 }
 
-/// Appends one part of an upload that arrives in pieces. A repeated part is ignored, so retrying after a lost
-/// response is safe; a gap or overflow is refused.
+/// Appends one part of an upload that arrives in pieces. An identical repeated part is ignored, so retrying
+/// after a lost response is safe; changed bytes, a gap or overflow are refused.
 pub(crate) fn append_part(
     buffer: &mut Vec<u8>,
     offset: usize,
@@ -1333,8 +1334,27 @@ pub(crate) fn append_part(
         buffer.extend_from_slice(part);
     } else if end > buffer.len() {
         return Err("upload part out of order");
+    } else if &buffer[offset..end] != part {
+        return Err("upload part has different content");
     }
     Ok(())
+}
+
+#[test]
+fn upload_retries_must_match_buffered_bytes() {
+    let mut bytes = Vec::new();
+    append_part(&mut bytes, 0, b"first", 10).unwrap();
+    append_part(&mut bytes, 0, b"first", 10).unwrap();
+    append_part(&mut bytes, 1, b"irs", 10).unwrap();
+    assert!(append_part(&mut bytes, 0, b"other", 10).is_err());
+    assert!(append_part(&mut bytes, 1, b"xxx", 10).is_err());
+    assert!(append_part(&mut bytes, 4, b"st", 10).is_err());
+    assert!(append_part(&mut bytes, 6, b"gap", 10).is_err());
+    assert!(append_part(&mut bytes, usize::MAX, b"overflow", 10).is_err());
+    assert!(append_part(&mut bytes, 5, b"too long", 10).is_err());
+    assert_eq!(bytes, b"first");
+    append_part(&mut bytes, 5, b" last", 10).unwrap();
+    assert_eq!(bytes, b"first last");
 }
 async fn interrupt(
     State(manager): State<Arc<Manager>>,

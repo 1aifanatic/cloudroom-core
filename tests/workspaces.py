@@ -118,6 +118,9 @@ class WorkspaceTests(unittest.TestCase):
                 return upload(kind,'parts','big.bin',big[offset:offset+size],expected=expected,parts=f'&offset={offset}&total={len(big)}')
             self.assertEqual(part(0),{'received':size})
             self.assertEqual(part(0),{'received':size})
+            changed = upload(kind,'parts','big.bin',b'changed',expected=409,parts=f'&offset=0&total={len(big)}')
+            self.assertIn('different content', changed['error'])
+            self.assertEqual(changed['code'], 'request_conflict')
             self.assertIn('out of order',part(2*size,409)['error'])
             self.assertEqual(part(size),{'received':2*size})
             saved = part(2*size)['receipt']['input']
