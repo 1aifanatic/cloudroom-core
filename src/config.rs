@@ -83,6 +83,7 @@ impl Config {
             "fx" => Kind::Fx,
             "opencode" => Kind::OpenCode,
             "hermes" => Kind::Hermes,
+            "devin" => Kind::Devin,
             _ => return Err(io::Error::other("unsupported CLOUDROOM_HARNESS")),
         };
         let account_home: PathBuf = required("CLOUDROOM_ACCOUNT_HOME")?.into();
@@ -145,57 +146,31 @@ impl Config {
                 },
             );
         }
-        let fx = [
-            account_home.join(".local/bin/fx"),
-            PathBuf::from("/usr/local/bin/fx"),
-        ]
-        .into_iter()
-        .find(|path| path.is_file());
-        if let Some(binary) = fx.filter(|_| account_home.join(".fx").is_dir()) {
-            harnesses.insert(
-                Kind::Fx,
-                HarnessConfig {
-                    binary,
-                    home: account_home.join(".fx"),
-                    model: "default".into(),
-                    provider: None,
-                },
-            );
-        }
-        let opencode = [
-            account_home.join(".local/bin/opencode"),
-            PathBuf::from("/usr/local/bin/opencode"),
-        ]
-        .into_iter()
-        .find(|path| path.is_file());
-        let opencode_home = account_home.join(".local/share/opencode");
-        if let Some(binary) = opencode.filter(|_| opencode_home.is_dir()) {
-            harnesses.insert(
-                Kind::OpenCode,
-                HarnessConfig {
-                    binary,
-                    home: opencode_home,
-                    model: "default".into(),
-                    provider: None,
-                },
-            );
-        }
-        let hermes = [
-            account_home.join(".local/bin/hermes"),
-            PathBuf::from("/usr/local/bin/hermes"),
-        ]
-        .into_iter()
-        .find(|path| path.is_file());
-        if let Some(binary) = hermes.filter(|_| account_home.join(".hermes").is_dir()) {
-            harnesses.insert(
-                Kind::Hermes,
-                HarnessConfig {
-                    binary,
-                    home: account_home.join(".hermes"),
-                    model: "default".into(),
-                    provider: None,
-                },
-            );
+        // Native ACP agents: Core offers each once its binary and home folder exist.
+        for (kind, name, home) in [
+            (Kind::Fx, "fx", ".fx"),
+            (Kind::OpenCode, "opencode", ".local/share/opencode"),
+            (Kind::Hermes, "hermes", ".hermes"),
+            (Kind::Devin, "devin", ".local/share/devin"),
+        ] {
+            let home = account_home.join(home);
+            let binary = [
+                account_home.join(".local/bin").join(name),
+                PathBuf::from("/usr/local/bin").join(name),
+            ]
+            .into_iter()
+            .find(|path| path.is_file());
+            if let Some(binary) = binary.filter(|_| home.is_dir()) {
+                harnesses.insert(
+                    kind,
+                    HarnessConfig {
+                        binary,
+                        home,
+                        model: "default".into(),
+                        provider: None,
+                    },
+                );
+            }
         }
         Ok(Self {
             storage,

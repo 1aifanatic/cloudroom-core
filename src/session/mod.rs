@@ -643,6 +643,7 @@ impl Manager {
             runtime::Kind::Fx => runtime::PI_REASONING_LEVELS.contains(&reasoning),
             runtime::Kind::OpenCode => runtime::OPENCODE_REASONING_LEVELS.contains(&reasoning),
             runtime::Kind::Hermes => runtime::HERMES_REASONING_LEVELS.contains(&reasoning),
+            runtime::Kind::Devin => runtime::DEVIN_REASONING_LEVELS.contains(&reasoning),
         };
         if !supported {
             return Err(Error::Conflict("invalid reasoning effort"));

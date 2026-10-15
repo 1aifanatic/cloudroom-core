@@ -137,12 +137,13 @@ impl Manager {
 }
 
 /// Harnesses a cloud agent may start as a child thread; the app has no Cloud thread type for the others.
-const CHILD_HARNESSES: [runtime::Kind; 5] = [
+const CHILD_HARNESSES: [runtime::Kind; 6] = [
     runtime::Kind::Codex,
     runtime::Kind::Claude,
     runtime::Kind::Pi,
     runtime::Kind::OpenCode,
     runtime::Kind::Hermes,
+    runtime::Kind::Devin,
 ];
 const FINISHED: [&str; 5] = [
     "completed",
@@ -237,9 +238,21 @@ pub(super) fn fork_history(
 }
 
 /// A notice's two delivery attempts: steered into the parent's running turn, then queued as a prompt.
+/// Request IDs hold at most 64 characters, so a longer one becomes a stable FNV-1a hash.
 fn notice_ids(child: &str, request: &str) -> (String, String) {
-    let queued = format!("notice_{child}_{request}");
+    let mut queued = legacy_notice_id(child, request);
+    if queued.len() + "_steer".len() > 64 {
+        let hash = queued.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        });
+        queued = format!("notice_{hash:016x}");
+    }
     (format!("{queued}_steer"), queued)
+}
+
+/// Core 0.1.57 and older never shortened it, so a notice they delivered is still found.
+fn legacy_notice_id(child: &str, request: &str) -> String {
+    format!("notice_{child}_{request}")
 }
 
 fn title(session: &Session) -> Option<String> {
@@ -314,7 +327,7 @@ impl Manager {
             let kind = spawn.harness.unwrap_or(p.harness);
             if !CHILD_HARNESSES.contains(&kind) {
                 return Err(Error::Conflict(
-                    "child threads support codex, claude-code, pi, opencode and hermes",
+                    "child threads support codex, claude-code, pi, opencode, hermes and devin",
                 ));
             }
             let same = kind == p.harness;
@@ -625,15 +638,21 @@ impl Manager {
                             return None;
                         }
                         let (steer, queued) = notice_ids(&child, &r.request_id);
+                        let legacy = legacy_notice_id(&child, &r.request_id);
                         let tried = p.receipts.get(&steer);
+                        let steered = |s: &Receipt| {
+                            s.state == "completed"
+                                || (s.state == "accepted"
+                                    && s.input["target_request_id"].as_str()
+                                        == p.current_request.as_deref())
+                        };
                         // Delivered, or still being steered into the turn it targets.
                         let settled = p.receipts.contains_key(&queued)
-                            || tried.is_some_and(|s| {
-                                s.state == "completed"
-                                    || (s.state == "accepted"
-                                        && s.input["target_request_id"].as_str()
-                                            == p.current_request.as_deref())
-                            });
+                            || p.receipts.contains_key(&legacy)
+                            || tried.is_some_and(steered)
+                            || p.receipts
+                                .get(&format!("{legacy}_steer"))
+                                .is_some_and(steered);
                         (!settled).then(|| (r, tried.is_none()))
                     });
                     match finished {

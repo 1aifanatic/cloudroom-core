@@ -16,11 +16,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{io, sync::Arc};
 
-const USAGE: &str = "room-cli automation create --name NAME --prompt TEXT|--prompt-file PATH (--cron 'MIN HOUR DAY MONTH WEEKDAY' [--timezone ZONE] | --at ISO_TIME | --in 30m)
+const USAGE: &str = "room-cli automation create --name NAME --prompt TEXT|--prompt-file PATH (--cron 'MIN HOUR DAY MONTH WEEKDAY' [--timezone ZONE] | --at ISO_TIME | --in 30m) [--new-thread] [--script TEXT|--script-file PATH]
 room-cli automation list
-room-cli automation update ID [--name NAME] [--prompt TEXT] [--cron EXPR [--timezone ZONE] | --at ISO_TIME | --in 30m]
+room-cli automation update ID [--name NAME] [--prompt TEXT] [--cron EXPR [--timezone ZONE] | --at ISO_TIME | --in 30m] [--script TEXT|--script-file PATH]
 room-cli automation pause|resume|run|delete ID
-Re-prompts this Cloud thread on a schedule, even while the user's Mac is off. Cloudroom fills in the next run within a minute; check `list` for it or an error.";
+Re-prompts this Cloud thread on a schedule, at most every 15 minutes, even while the user's Mac is off. --new-thread starts a fresh Cloud thread in its own sandbox each run instead, from this thread's project and agent. A script runs first in this sandbox (60 s): no output skips the run, and its output is added to the prompt. Cloudroom fills in the next run within a minute; check `list` for it or an error.";
 const MAX_PROMPT: usize = 32_000;
 
 #[derive(Deserialize, Serialize)]
@@ -41,6 +41,10 @@ pub struct Body {
     at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     delay: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    new_thread: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    script: Option<String>,
 }
 
 /// Served on the agent-only socket that `room-cli mac` also uses.
@@ -101,6 +105,13 @@ fn check(input: &Body) -> Result<(), Failure> {
         .is_some_and(|p| p.trim().is_empty() || p.len() > MAX_PROMPT)
     {
         return bad("Use a prompt of 1-32000 bytes");
+    }
+    if input
+        .script
+        .as_ref()
+        .is_some_and(|s| s.trim().is_empty() || s.len() > MAX_PROMPT)
+    {
+        return bad("Use a script of 1-32000 bytes");
     }
     if input
         .cron
@@ -181,6 +192,21 @@ pub async fn cli(args: &[String]) -> io::Result<i32> {
             };
             if let Some(prompt) = prompt {
                 body["prompt"] = json!(prompt);
+            }
+            let script = match (flag(&words, "--script"), flag(&words, "--script-file")) {
+                (Some(text), None) => Some(text.to_owned()),
+                (None, Some(path)) => Some(std::fs::read_to_string(path)?),
+                (None, None) => None,
+                _ => {
+                    println!("{USAGE}");
+                    return Ok(2);
+                }
+            };
+            if let Some(script) = script {
+                body["script"] = json!(script);
+            }
+            if words[0] == "create" && words.contains(&"--new-thread") {
+                body["new_thread"] = json!(true);
             }
             for (name, key) in [
                 ("--name", "name"),

@@ -141,7 +141,8 @@ impl Manager {
                 runtime::Kind::Cursor
                 | runtime::Kind::Fx
                 | runtime::Kind::OpenCode
-                | runtime::Kind::Hermes => {
+                | runtime::Kind::Hermes
+                | runtime::Kind::Devin => {
                     let capabilities = runtime::cursor::capabilities(*kind);
                     for (key, value) in capabilities.as_object().unwrap() {
                         harness[key] = value.clone();
@@ -149,6 +150,7 @@ impl Manager {
                     harness["reasoning_levels"] = json!(match kind {
                         runtime::Kind::OpenCode => runtime::OPENCODE_REASONING_LEVELS,
                         runtime::Kind::Hermes => runtime::HERMES_REASONING_LEVELS,
+                        runtime::Kind::Devin => runtime::DEVIN_REASONING_LEVELS,
                         _ => runtime::PI_REASONING_LEVELS,
                     });
                     // Cursor's print mode has no image input; Cursor and OpenCode open images from the attached path.
@@ -203,6 +205,7 @@ impl Manager {
                     | runtime::Kind::Fx
                     | runtime::Kind::OpenCode
                     | runtime::Kind::Hermes
+                    | runtime::Kind::Devin
             ) && session.reasoning.as_deref() != Some(reasoning)
             {
                 return Err(Error::Conflict("invalid reasoning effort"));
@@ -224,6 +227,7 @@ impl Manager {
             runtime::Kind::Fx => runtime::PI_REASONING_LEVELS.contains(&reasoning),
             runtime::Kind::OpenCode => runtime::OPENCODE_REASONING_LEVELS.contains(&reasoning),
             runtime::Kind::Hermes => runtime::HERMES_REASONING_LEVELS.contains(&reasoning),
+            runtime::Kind::Devin => runtime::DEVIN_REASONING_LEVELS.contains(&reasoning),
         };
         if !supported {
             return Err(Error::Conflict("invalid reasoning effort"));

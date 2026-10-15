@@ -499,7 +499,7 @@ READ_ONLY = ('(version 1)(allow default)(deny file-write*)'
              ' (literal "/usr/bin/automator") (literal "/bin/launchctl") (literal "/usr/bin/tccutil") (literal "/usr/bin/defaults"))')
 ASK = '''on run argv
 activate
-display dialog (item 1 of argv) with title "Cloudroom" buttons {"Deny", "Allow for this thread", "Allow"} default button "Allow" cancel button "Deny" with icon caution giving up after 300
+display dialog (item 1 of argv) with title "Cloudroom" buttons {"Deny", "Allow for this thread", "Allow"} default button (item 2 of argv) cancel button "Deny" with icon caution giving up after 300
 return button returned of result
 end run'''
 # Hex characters per result request: some sandbox proxies drop requests over about 8 MB,
@@ -585,9 +585,15 @@ class MacJobs:
         with self.asking:
             if core.key in self.trusted:
                 return True
-            text = f"A cloud agent wants to change your Mac.\n\nFolder: {job.get('cwd') or '~'}\n\n{job['command'][:600]}"
-            process = subprocess.Popen(['/usr/bin/osascript', '-e', ASK, text], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                                       start_new_session=True)
+            # Hidden parts still run: warn above the command, where padding cannot push it out of view, and let Return deny.
+            command, stdin, warnings = job['command'], len(job.get('stdin') or '') // 2, ''
+            if len(command) > 600:
+                warnings += f"Warning: {len(command) - 600:,} more characters of this command are not shown, and will also run.\n\n"
+            if stdin:
+                warnings += f"Warning: the command also reads {stdin:,} bytes of input that are not shown.\n\n"
+            text = f"A cloud agent wants to change your Mac.\n\n{warnings}Folder: {job.get('cwd') or '~'}\n\n{command[:600]}"
+            process = subprocess.Popen(['/usr/bin/osascript', '-e', ASK, text, 'Deny' if warnings else 'Allow'], stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL, text=True, start_new_session=True)
             with self.lock:
                 self.running[job['id']] = process
             answer = process.communicate()[0].strip()

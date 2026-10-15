@@ -5,7 +5,7 @@ export type Json =
   | string
   | Json[]
   | { [key: string]: Json };
-export type Harness = "codex" | "pi" | "cursor" | "claude-code" | "fx" | "opencode" | "hermes";
+export type Harness = "codex" | "pi" | "cursor" | "claude-code" | "fx" | "opencode" | "hermes" | "devin";
 export type CodexAuthStatus = {
   state: "missing" | "waiting" | "connected" | "limited" | "unavailable" | "error" | "expired";
   email: string | null; plan: string | null; message: string | null;
@@ -253,6 +253,7 @@ function requestId(value: string): string {
   if (!/^[a-zA-Z0-9_-]{1,64}$/.test(value)) {
     throw new CloudroomError(
       "request_id must be 1–64 letters, digits, underscores or hyphens",
+      400,
     );
   }
   return value;
@@ -260,7 +261,7 @@ function requestId(value: string): string {
 
 function sessionPath(id: string): string {
   if (!/^[a-zA-Z0-9_-]{1,128}$/.test(id))
-    throw new CloudroomError("A valid Cloudroom session ID is required");
+    throw new CloudroomError("A valid Cloudroom session ID is required", 400);
   return `/v1/sessions/${encodeURIComponent(id)}`;
 }
 
@@ -576,7 +577,7 @@ export class CloudroomClient {
   }
 
   start(id: string, harness: Harness = "codex", options: { model?: string; reasoning?: string; workspace?: string; workspace_name?: string; provider?: string; command_guard_enabled?: boolean; strip_ai_co_authors?: boolean; system_prompt?: string; parent_session?: string; prompt?: string; title?: string; fork?: { session: string; before?: string; last_turn_id?: string } } = {}) {
-    if (harness !== "codex" && harness !== "pi" && harness !== "cursor" && harness !== "claude-code" && harness !== "fx" && harness !== "opencode" && harness !== "hermes")
+    if (harness !== "codex" && harness !== "pi" && harness !== "cursor" && harness !== "claude-code" && harness !== "fx" && harness !== "opencode" && harness !== "hermes" && harness !== "devin")
       throw new CloudroomError("Unsupported Cloudroom harness");
     return this.#command("/v1/sessions", "start", { request_id: id, harness, ...options });
   }
@@ -693,7 +694,7 @@ export class CloudroomClient {
   ): Promise<Acceptance> {
     requestId(id);
     if (!Number.isSafeInteger(upload.length) || upload.length <= 0 || upload.length > 25 * 1024 * 1024) {
-      throw new CloudroomError("Attachment exceeds the size limit");
+      throw new CloudroomError("Attachment exceeds the size limit", 400);
     }
     const query = new URLSearchParams({ request_id: id, name, kind });
     const value = await this.#json(
@@ -716,7 +717,7 @@ export class CloudroomClient {
     signal?: AbortSignal,
   ): Promise<Acceptance> {
     requestId(id);
-    if (bytes.length > 25 * 1024 * 1024) throw new CloudroomError("Attachment exceeds the size limit");
+    if (bytes.length > 25 * 1024 * 1024) throw new CloudroomError("Attachment exceeds the size limit", 400);
     let offset = 0;
     do {
       const part = bytes.subarray(offset, offset + UPLOAD_PART);
@@ -790,7 +791,7 @@ export class CloudroomClient {
     );
     if (
       value.session_id !== sessionId ||
-      (value.harness !== "codex" && value.harness !== "pi" && value.harness !== "cursor" && value.harness !== "claude-code" && value.harness !== "fx" && value.harness !== "opencode" && value.harness !== "hermes")
+      (value.harness !== "codex" && value.harness !== "pi" && value.harness !== "cursor" && value.harness !== "claude-code" && value.harness !== "fx" && value.harness !== "opencode" && value.harness !== "hermes" && value.harness !== "devin")
     ) {
       throw new CloudroomError(
         "Cloudroom session mismatch or unsupported harness",

@@ -24,7 +24,7 @@ const USAGE: &str = "room-cli thread update --self --title TITLE
 room-cli thread update --self --reasoning-level LEVEL
 room-cli thread archive --self
 room-cli thread stop --self
-room-cli thread spawn --provider codex|claude-code|pi|opencode|hermes [--model MODEL] [--reasoning-level LEVEL] [--title TITLE] [--shared-sandbox] --prompt TEXT|--prompt-file PATH
+room-cli thread spawn --provider codex|claude-code|pi|opencode|hermes|devin [--model MODEL] [--reasoning-level LEVEL] [--title TITLE] [--shared-sandbox] --prompt TEXT|--prompt-file PATH
 room-cli thread list [--include-archived]
 room-cli thread output CHILD_ID
 room-cli thread tell CHILD_ID TEXT
@@ -37,7 +37,7 @@ const OWN_COMMAND_NOTE: &str =
     "Passed to the user's Cloudroom app, which applies it while it is open.";
 /// How long a spawn waits for the app to start the child in its own sandbox, and how long after a miss spawns
 /// share this sandbox right away, so a closed app costs one wait, not one per child.
-const APP_WAIT: Duration = Duration::from_secs(15);
+const APP_WAIT: Duration = Duration::from_secs(60);
 const APP_MISSED_FOR: Duration = Duration::from_secs(300);
 /// How long a child request's outcome is remembered, so a retried spawn or a repeated app answer gets the same one.
 const OUTCOME_KEPT: Duration = Duration::from_secs(3600);
@@ -252,8 +252,9 @@ async fn spawn(
         .provider
         .as_deref()
         .map(|p| {
-            serde_json::from_value(json!(p))
-                .map_err(|_| bad("Use --provider codex, claude-code, pi, opencode or hermes"))
+            serde_json::from_value(json!(p)).map_err(|_| {
+                bad("Use --provider codex, claude-code, pi, opencode, hermes or devin")
+            })
         })
         .transpose()?;
     let key = match input.request_id.clone() {
