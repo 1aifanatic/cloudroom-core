@@ -601,6 +601,27 @@ test("times out a stalled command without resubmitting", async (t) => {
   assert.equal(service.requests.length, 1);
 });
 
+test("preserves cancellation and timeouts while reading a JSON response body", async (t) => {
+  const headersSent = Promise.withResolvers<void>();
+  const service = await fixture((req, res) => {
+    res.writeHead(req.method === "POST" ? 202 : 200, { "Content-Type": "application/json" });
+    res.write('{"session_id":');
+    headersSent.resolve();
+  }, 500);
+  t.after(() => service.close());
+  const controller = new AbortController();
+  const cancelled = assert.rejects(
+    service.client.health(controller.signal),
+    (error: unknown) => error instanceof DOMException && error.name === "AbortError",
+  );
+  await headersSent.promise;
+  controller.abort();
+  await cancelled;
+  await assert.rejects(service.client.start("timeout-body"),
+    (error: unknown) => error instanceof DOMException && error.name === "AbortError");
+  assert.deepEqual(service.requests, ["GET /v1/health", "POST /v1/sessions"]);
+});
+
 test("reads core status without exposing private fields as client configuration", async (t) => {
   const service = await fixture((_req, res) =>
     sendJson(res, {

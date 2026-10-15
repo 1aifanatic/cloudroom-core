@@ -426,10 +426,11 @@ export class CloudroomClient {
     timeoutMs = this.#timeoutMs,
   ): Promise<Record<string, unknown>> {
     const timeout = AbortSignal.timeout(timeoutMs);
+    const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
     const response = await this.#request(
       path,
       body,
-      signal ? AbortSignal.any([signal, timeout]) : timeout,
+      requestSignal,
       upload,
     );
     if ((body !== undefined || upload) && response.status !== 202) {
@@ -465,6 +466,8 @@ export class CloudroomClient {
       }
       return object(JSON.parse(new TextDecoder().decode(bytes)));
     } catch (error) {
+      if (requestSignal.aborted)
+        throw new DOMException("Cloudroom request cancelled or timed out", "AbortError");
       if (error instanceof CloudroomError) throw error;
       throw new CloudroomError(
         "Incomplete or invalid Cloudroom response. Retry unconfirmed commands with the same request_id.",
