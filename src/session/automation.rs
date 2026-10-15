@@ -16,11 +16,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{io, sync::Arc};
 
-const USAGE: &str = "room-cli automation create --name NAME --prompt TEXT|--prompt-file PATH (--cron 'MIN HOUR DAY MONTH WEEKDAY' [--timezone ZONE] | --at ISO_TIME | --in 30m) [--new-thread] [--script TEXT|--script-file PATH]
+const USAGE: &str = "room-cli automation create --name NAME --prompt TEXT|--prompt-file PATH (--cron 'MIN HOUR DAY MONTH WEEKDAY' [--timezone ZONE] | --at ISO_TIME | --in 30m) [--new-thread|--same-thread] [--script TEXT|--script-file PATH]
 room-cli automation list
 room-cli automation update ID [--name NAME] [--prompt TEXT] [--cron EXPR [--timezone ZONE] | --at ISO_TIME | --in 30m] [--script TEXT|--script-file PATH]
 room-cli automation pause|resume|run|delete ID
-Re-prompts this Cloud thread on a schedule, at most every 15 minutes, even while the user's Mac is off. --new-thread starts a fresh Cloud thread in its own sandbox each run instead, from this thread's project and agent. A script runs first in this sandbox (60 s): no output skips the run, and its output is added to the prompt. Cloudroom fills in the next run within a minute; check `list` for it or an error.";
+Runs on a schedule, at most every 15 minutes, even while the user's Mac is off. Each --cron run starts a fresh Cloud thread in its own sandbox, from this thread's project and agent; --same-thread re-prompts this thread instead. A one-time --at/--in run re-prompts this thread; --new-thread gives it a fresh one. A fresh-thread automation saves this thread's settings, so it keeps running after this thread is archived. A script runs first (60 s), in the automation's own sandbox with fresh threads, else in this one: no output skips the run, and its output is added to the prompt. Cloudroom fills in the next run within a minute; check `list` for it or an error.";
 const MAX_PROMPT: usize = 32_000;
 
 #[derive(Deserialize, Serialize)]
@@ -207,6 +207,8 @@ pub async fn cli(args: &[String]) -> io::Result<i32> {
             }
             if words[0] == "create" && words.contains(&"--new-thread") {
                 body["new_thread"] = json!(true);
+            } else if words[0] == "create" && words.contains(&"--same-thread") {
+                body["new_thread"] = json!(false);
             }
             for (name, key) in [
                 ("--name", "name"),
