@@ -20,7 +20,7 @@ const USAGE: &str = "room-cli automation create --name NAME --prompt TEXT|--prom
 room-cli automation list
 room-cli automation update ID [--name NAME] [--prompt TEXT] [--cron EXPR [--timezone ZONE] | --at ISO_TIME | --in 30m] [--script TEXT|--script-file PATH]
 room-cli automation pause|resume|run|delete ID
-Runs on a schedule, at most every 15 minutes, even while the user's Mac is off. Each --cron run starts a fresh Cloud thread in its own sandbox, from this thread's project and agent; --same-thread re-prompts this thread instead. A one-time --at/--in run re-prompts this thread; --new-thread gives it a fresh one. A fresh-thread automation saves this thread's settings, so it keeps running after this thread is archived. A script runs first (60 s), in the automation's own sandbox with fresh threads, else in this one: no output skips the run, and its output is added to the prompt. Cloudroom fills in the next run within a minute; check `list` for it or an error.";
+Runs on a schedule even while the user's Mac is off: every minute with a script, else at most every 15 minutes. Each --cron run starts a fresh Cloud thread in its own sandbox, from this thread's project and agent; --same-thread re-prompts this thread instead. A one-time --at/--in run re-prompts this thread; --new-thread gives it a fresh one. A fresh-thread automation saves this thread's settings, so it keeps running after this thread is archived. A script runs first (60 s), in the automation's own sandbox with fresh threads, else in this one: no output skips the run, and its output is added to the prompt. Cloudroom fills in the next run within a minute; check `list` for it or an error.";
 const MAX_PROMPT: usize = 32_000;
 
 #[derive(Deserialize, Serialize)]

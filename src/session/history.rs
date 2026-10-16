@@ -86,6 +86,14 @@ impl Api {
         Err(ApiError::Status(status, message))
     }
 
+    pub async fn get(&self, path: &str, query: &[(&str, &str)]) -> Result<Value, ApiError> {
+        Self::send(self.call(Method::GET, path).query(query))
+            .await?
+            .json()
+            .await
+            .map_err(|e| ApiError::Network(e.to_string()))
+    }
+
     pub async fn post(&self, path: &str, body: &Value) -> Result<Value, ApiError> {
         Self::send(self.call(Method::POST, path).json(body))
             .await?

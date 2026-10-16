@@ -26,7 +26,7 @@ room-cli thread archive --self
 room-cli thread stop --self
 room-cli thread spawn --provider codex|claude-code|pi|opencode|hermes|devin [--model MODEL] [--reasoning-level LEVEL] [--title TITLE] [--shared-sandbox] --prompt TEXT|--prompt-file PATH
 room-cli thread list [--include-archived]
-room-cli thread output CHILD_ID
+room-cli thread output CHILD_ID [--all]
 room-cli thread tell CHILD_ID TEXT
 room-cli thread stop CHILD_ID
 room-cli thread archive CHILD_ID";
@@ -465,16 +465,41 @@ async fn list(
     ))
 }
 
+#[derive(Deserialize)]
+struct OutputQuery {
+    #[serde(default)]
+    all: bool,
+}
+
 async fn output(
     State(m): State<Arc<Manager>>,
     ConnectInfo(peer): ConnectInfo<Peer>,
     Path(id): Path<String>,
+    Query(query): Query<OutputQuery>,
 ) -> Result<Json<Value>, Failure> {
     let parent = caller(&m, peer, "thread output")?;
     if id.starts_with("thr_") {
-        return Ok(Json(
-            json!({"id":id,"note":"This child runs in its own sandbox. Its replies arrive as messages when its turns end."}),
-        ));
+        // A child in its own sandbox: its saved chat, through the website, which checks this thread started it (ADR 0256).
+        let Some(api) = &m.history.api else {
+            return Ok(Json(
+                json!({"id":id,"note":"This child runs in its own sandbox. Its replies arrive as messages when its turns end."}),
+            ));
+        };
+        let all = if query.all { "1" } else { "0" };
+        return api
+            .get("chat", &[("thread", &id), ("all", all)])
+            .await
+            .map(Json)
+            .map_err(|error| match error {
+                super::history::ApiError::Status(status, message) => fail(
+                    StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+                    &message,
+                ),
+                error => fail(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    &format!("Could not read the child's chat: {error}"),
+                ),
+            });
     }
     m.own_child(&parent, &id).map_err(session_failure)?;
     Ok(Json(
@@ -657,10 +682,19 @@ pub async fn cli(args: &[String]) -> io::Result<i32> {
             println!("{answer}");
             return Ok(0);
         }
-        ["output", id] => {
-            let answer =
-                crate::mac::request(crate::mac::SOCKET, "GET", &format!("/children/{id}"), None)
-                    .await?;
+        ["output", id] | ["output", id, "--all"] | ["output", "--all", id] => {
+            let all = if words.contains(&"--all") {
+                "?all=true"
+            } else {
+                ""
+            };
+            let answer = crate::mac::request(
+                crate::mac::SOCKET,
+                "GET",
+                &format!("/children/{id}{all}"),
+                None,
+            )
+            .await?;
             println!("{answer}");
             return Ok(0);
         }

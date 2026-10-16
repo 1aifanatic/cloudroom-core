@@ -4,7 +4,7 @@ One internal module; no alerts, external collector, or new dependency. Diagnosti
 
 ## Recorded data
 
-- `api`: route template, GET/POST/other, HTTP status and response-header latency. SSE timing covers stream setup, not its lifetime. `X-Cloudroom-Diagnostic-Id` matches the individual local record's `run_id-sequence`. Uploads keep individual errors, requests taking at least one second, and commands.
+- `api`: route template, GET/POST/other, HTTP status and response-header latency. SSE timing covers stream setup, not its lifetime. `X-Cloudroom-Diagnostic-Id` matches the individual local record's `run_id-sequence`. Uploads keep individual errors, requests taking at least one second, and commands. The morning brief counts cloud threads and messages from these command records.
 - `api_summary`: successful GETs and `/v1/sync` POSTs below one second become one uploaded record per method/route/status each minute. It contains request count, total/max latency, and first/last timestamps. Individual requests remain in bounded local logs. Shutdown flushes partial summaries; abrupt process loss can lose buffered counts.
 - `agent_start`: Cloudroom session ID, initialization success and elapsed milliseconds; not inference response time.
 - `agent_exit`: session ID (`null` for model discovery), harness, fixed reason, expected/technical classification, exit code or signal, stderr byte count, EOF confirmation and truncation flag. Session exit records include the matching `diagnostic_id` (`run_id-sequence`). Normal turn completion is not a crash.

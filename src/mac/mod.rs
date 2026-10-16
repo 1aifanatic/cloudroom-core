@@ -40,11 +40,15 @@ const LIMIT: usize = 16 * 1024 * 1024;
 const BODY: usize = 5 * LIMIT;
 /// A connected helper must confirm each job quickly; a sleeping Mac must not hang agents.
 const ACK: Duration = Duration::from_secs(10);
+/// A job's stdin reaches the Mac before its helper can confirm it, so big inputs (`push`) get extra time at this
+/// many hex bytes per second, a slow link's speed (feedback #386).
+const SLOW_LINK: usize = 32 * 1024;
 const KEEP: Duration = Duration::from_secs(3600);
 /// The helper needs a few seconds to find a new thread's sandbox or reconnect after a wake, so early calls wait for it.
 const FRESH: Duration = Duration::from_secs(60);
 const ATTACH: Duration = Duration::from_secs(30);
 const UNAVAILABLE: &str = "Mac unavailable: the paired Mac is offline, asleep, or has Mac access turned off. Continue cloud work and try again later.";
+const NOT_RESPONDING: &str = "Mac not responding: the paired Mac is connected but did not pick up this command in time. It may be asleep, very busy, or on a slow connection. Continue cloud work and try again later.";
 pub const SKILL: &str = include_str!("cloud-mac/SKILL.md");
 pub const ROOM_CLI_SKILL: &str = include_str!("room-cli/SKILL.md");
 
@@ -377,7 +381,7 @@ async fn local_run(
         events,
         armed: true,
     };
-    let started = Instant::now();
+    let deadline = Instant::now() + ACK + Duration::from_secs((run.stdin.len() / SLOW_LINK) as u64);
     loop {
         let connected = mac.connected(generation);
         {
@@ -389,7 +393,7 @@ async fn local_run(
                 result["job"] = json!(id);
                 return Ok(Json(result));
             }
-            if !job.acked && (!connected || started.elapsed() >= ACK) {
+            if !job.acked && (!connected || Instant::now() >= deadline) {
                 jobs.remove(&id);
                 if let Some(h) = mac
                     .helper
@@ -400,7 +404,11 @@ async fn local_run(
                 {
                     h.stale = true;
                 }
-                return Err(conflict(UNAVAILABLE));
+                return Err(conflict(if connected {
+                    NOT_RESPONDING
+                } else {
+                    UNAVAILABLE
+                }));
             }
             // In-flight work keeps running on the Mac; its helper reports the result after reconnecting.
             if !connected {
