@@ -81,11 +81,15 @@ def port(values):
 
 
 def api(values, path):
-    request = urllib.request.Request(f'http://127.0.0.1:{port(values)}{path}',
+    host = values.get('CLOUDROOM_LISTEN', '127.0.0.1:9840').rsplit(':', 1)[0]
+    host = {'0.0.0.0': '127.0.0.1', '[::]': '[::1]'}.get(host, host)
+    request = urllib.request.Request(f'http://{host}:{port(values)}{path}',
                                      headers={'Authorization': 'Bearer ' + values['CLOUDROOM_TOKEN']})
+    # This is our own service, even when it binds a non-loopback address.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     for attempt in range(3):
         try:
-            with urllib.request.urlopen(request, timeout=60) as response:
+            with opener.open(request, timeout=60) as response:
                 return json.load(response)
         except urllib.error.HTTPError:
             raise

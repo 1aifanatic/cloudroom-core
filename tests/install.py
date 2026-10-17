@@ -2,11 +2,14 @@
 """Installer contract checks using a temporary directory, never host configuration."""
 import importlib.util
 import errno
+import http.server
 import json
 import os
 from pathlib import Path
 import tempfile
 import subprocess
+import socket
+import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -14,6 +17,43 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location('installer', Path(__file__).resolve().parents[1] / 'install/configure.py')
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
+
+
+class UpdateTests(unittest.TestCase):
+    def test_api_uses_the_configured_listener(self):
+        spec = importlib.util.spec_from_file_location('updater', Path(__file__).resolve().parents[1] / 'install/update.py')
+        updater = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(updater)
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(json.dumps({'path': self.path, 'auth': self.headers['Authorization']}).encode())
+
+            def log_message(self, *_):
+                pass
+
+        class IPv6Server(http.server.HTTPServer):
+            address_family = socket.AF_INET6
+
+        for host, server_class in [('127.0.0.1', http.server.HTTPServer), ('::1', IPv6Server)]:
+            with self.subTest(host=host):
+                with server_class((host, 0), Handler) as server:
+                    worker = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': .01})
+                    worker.start()
+                    try:
+                        address = f'[{host}]' if ':' in host else host
+                        # A proxy must not intercept the updater's calls to its own service.
+                        for proxy in ['', 'http://127.0.0.1:1']:
+                            with patch.dict(os.environ, {'http_proxy': proxy}, clear=True), patch.object(updater.time, 'sleep'):
+                                for listen in [address, '[::]' if ':' in host else '0.0.0.0']:
+                                    values = {'CLOUDROOM_LISTEN': f'{listen}:{server.server_port}', 'CLOUDROOM_TOKEN': 'synthetic'}
+                                    self.assertEqual(updater.api(values, '/v1/health'),
+                                                     {'path': '/v1/health', 'auth': 'Bearer synthetic'})
+                    finally:
+                        server.shutdown()
+                        worker.join()
 
 
 class InstallerTests(unittest.TestCase):
