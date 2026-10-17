@@ -1,4 +1,5 @@
-//! Cloud agents schedule work for their own thread (ADR 0212). Core passes each command to the website (ADR 0234),
+//! Cloud agents schedule work for their own thread (ADR 0212). `room-cli loop` is the same command: Automations are
+//! called Loops in the app (ADR 0259). Core passes each command to the website (ADR 0234),
 //! like feedback, so it works while the user's Mac is offline. The website's every-minute cron wakes the sandbox and
 //! sends the prompt; it also computes the next run, so Core never parses cron.
 use super::{
@@ -20,7 +21,7 @@ const USAGE: &str = "room-cli automation create --name NAME --prompt TEXT|--prom
 room-cli automation list
 room-cli automation update ID [--name NAME] [--prompt TEXT] [--cron EXPR [--timezone ZONE] | --at ISO_TIME | --in 30m] [--script TEXT|--script-file PATH]
 room-cli automation pause|resume|run|delete ID
-Runs on a schedule even while the user's Mac is off: every minute with a script, else at most every 15 minutes. Each --cron run starts a fresh Cloud thread in its own sandbox, from this thread's project and agent; --same-thread re-prompts this thread instead. A one-time --at/--in run re-prompts this thread; --new-thread gives it a fresh one. A fresh-thread automation saves this thread's settings, so it keeps running after this thread is archived. A script runs first (60 s), in the automation's own sandbox with fresh threads, else in this one: no output skips the run, and its output is added to the prompt. Cloudroom fills in the next run within a minute; check `list` for it or an error.";
+A loop runs on a schedule even while the user's Mac is off (`room-cli loop` is the same command): every minute with a script, else at most every 15 minutes. Each --cron run starts a fresh Cloud thread in its own sandbox, from this thread's project and agent; --same-thread re-prompts this thread instead. A one-time --at/--in run re-prompts this thread; --new-thread gives it a fresh one. A fresh-thread automation saves this thread's settings, so it keeps running after this thread is archived. A script runs first (60 s), in the automation's own sandbox with fresh threads, else in this one: no output skips the run, and its output is added to the prompt. Cloudroom fills in the next run within a minute; check `list` for it or an error.";
 const MAX_PROMPT: usize = 32_000;
 
 #[derive(Deserialize, Serialize)]

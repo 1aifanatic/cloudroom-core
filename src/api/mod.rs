@@ -555,6 +555,9 @@ impl IntoResponse for session::Error {
             "storage unsafe; new execution is blocked" => "storage_blocked",
             "service is stopping" => "service_stopping",
             "service is draining" => "service_draining",
+            "this thread was asleep and is waking up; try again in a few seconds" => {
+                "session_waking"
+            }
             "model catalog unavailable" => "model_catalog_unavailable",
             "connect Codex before starting cloud work" => "codex_auth_required",
             "connect Claude Code before starting cloud work" => "claude_auth_required",

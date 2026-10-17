@@ -998,8 +998,13 @@ impl Manager {
             if local.draining && !matches!(command, "interrupt" | "close" | "stop" | "cancel") {
                 return Err(Error::Conflict("service is draining"));
             }
-            if matches!(command, "compact" | "rewind" | "goal") && session.state == "sleeping" {
-                self.schedule_resume(&mut local, id, false)?;
+            // The app retries this answer until the harness is back.
+            if matches!(command, "compact" | "rewind" | "goal")
+                && matches!(session.state.as_str(), "sleeping" | "resuming")
+            {
+                if session.state == "sleeping" {
+                    self.schedule_resume(&mut local, id, false)?;
+                }
                 return Err(Error::Conflict(
                     "this thread was asleep and is waking up; try again in a few seconds",
                 ));

@@ -574,6 +574,8 @@ class MacJobs:
     """Mac access (ADR 0113, levels in ADR 0186): run commands from the user's cloud agents as this user, only while enabled."""
     def __init__(self, folder):
         self.folder, self.running, self.lock = folder, {}, threading.Lock()
+        # Jobs the agent stopped before they started; execute skips them.
+        self.cancelled = set()
         # Ask first: one dialog at a time; "Allow for this thread" trusts that sandbox's core until the helper restarts.
         self.asking, self.trusted = threading.Lock(), set()
 
@@ -660,34 +662,44 @@ class MacJobs:
             time.sleep(delay)
 
     def execute(self, core, device, job):
-        def post(body):
+        def post(body, timeout=MAC_POST_SECONDS):
             core.fetch(core.url + '/v1/mac/results/' + urllib.parse.quote(job['id']), {'device': device, **body}, None, core.headers,
-                       MAC_POST_SECONDS)
+                       timeout)
         with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
             review(core, job, mac_level(self.enabled() or {}))
-        try:
-            post({'state': 'running'})
-        except ControlError as error:
-            if error.code in (401, 403, 404, 409):
-                return  # Core already gave up on this job and told the agent it did not run.
-        except (OSError, ValueError):
-            pass
+        # Run only once Core confirms it still wants the job. Core gives up on an unconfirmed job after about 10 s and tells
+        # the agent it did not run, so running it anyway could change the Mac twice when the agent retries.
+        confirmed, deadline = False, time.monotonic() + 30
+        while not confirmed and time.monotonic() < deadline:
+            try:
+                post({'state': 'running'}, 10)
+                confirmed = True
+            except ControlError as error:
+                if error.code in (401, 403, 404, 409):
+                    return  # Core already gave up on this job and told the agent it did not run.
+                time.sleep(1)
+            except (OSError, ValueError):
+                time.sleep(1)
         result = {'state': 'done', 'code': 127, 'stdout': '', 'stderr': '', 'truncated': False}
-        refused = self.refusal(core, job)
+        # Core may have taken a confirmation whose reply was lost, so it still gets this result instead of waiting forever.
+        refused = self.refusal(core, job) if confirmed else 'The Mac could not confirm this command with the cloud, so it did not run. Try again.'
         sandboxed = not refused and not job.get('write') and mac_level(self.enabled() or {}) != 'full'
         shell = [pwd.getpwuid(os.getuid()).pw_shell or '/bin/zsh', '-lc', job['command']]
         try:
             if refused:
                 raise PermissionError(refused)
             folder = Path.home() / os.path.expanduser(job.get('cwd') or '~')
-            process = subprocess.Popen(['/usr/bin/sandbox-exec', '-p', READ_ONLY, *shell] if sandboxed else shell, cwd=folder,
-                                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+            with self.lock:  # A stop that arrives while the command starts either skips or kills it.
+                if job['id'] in self.cancelled:
+                    self.cancelled.discard(job['id'])
+                    raise PermissionError('The agent stopped this command before it started, so it did not run.')
+                process = subprocess.Popen(['/usr/bin/sandbox-exec', '-p', READ_ONLY, *shell] if sandboxed else shell, cwd=folder,
+                                           stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+                self.running[job['id']] = process
         except OSError as error:
-            result['code'] = 126 if refused else 127
+            result['code'] = 126 if isinstance(error, PermissionError) else 127
             result['stderr'] = str(error).encode().hex()
         else:
-            with self.lock:
-                self.running[job['id']] = process
             output = {'stdout': bytearray(), 'stderr': bytearray()}
             def read(name):
                 for chunk in iter(lambda: getattr(process, name).read1(65536), b''):
@@ -726,6 +738,8 @@ class MacJobs:
     def cancel(self, job):
         with self.lock:
             process = self.running.get(job)
+            if not process:
+                self.cancelled.add(job)
         if process:
             def kill(signal_number):
                 with contextlib.suppress(ProcessLookupError, PermissionError):

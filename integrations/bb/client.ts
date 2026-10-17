@@ -100,6 +100,7 @@ const rejectionMessages: Record<string, string> = {
   storage_blocked: "Cloud storage is temporarily blocking new work. Your request will retry.",
   service_stopping: "Cloud is restarting. Your request will retry.",
   service_draining: "The cloud sandbox is going to sleep. Your request will wake it and retry.",
+  session_waking: "The agent is waking up. Your request will retry.",
   model_catalog_unavailable: "Cloud model discovery is unavailable. Your request will retry.",
   invalid_service_tier: "This service tier is unavailable for the cloud model.",
   invalid_attachment: "The attachment could not be stored on Cloud.",
@@ -108,7 +109,7 @@ const rejectionMessages: Record<string, string> = {
 };
 // Thread errors with these messages ask the user to connect an account, not retry blindly.
 export const authRequiredMessages = new Set([rejectionMessages.codex_auth_required, rejectionMessages.cursor_auth_required, rejectionMessages.claude_auth_required]);
-const transientRejections = new Set(["storage_blocked", "service_stopping", "service_draining", "model_catalog_unavailable", "codex_auth_unavailable", "claude_auth_unavailable", "cursor_auth_unavailable"]);
+const transientRejections = new Set(["storage_blocked", "service_stopping", "service_draining", "session_waking", "model_catalog_unavailable", "codex_auth_unavailable", "claude_auth_unavailable", "cursor_auth_unavailable"]);
 
 export class CloudroomError extends Error {
   readonly status: number | null;

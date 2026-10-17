@@ -1059,13 +1059,13 @@ impl Adapter for Protocol {
                         ));
                     }
                     if call.kind == "compact" {
+                        let completed = self.compacted && value["is_error"] != true;
+                        // The usage snapshot after compaction must show the smaller context.
+                        if completed && self.context.is_some() {
+                            state.last_usage = usage(value, self.context);
+                        }
                         events.push(Event::Compacted {
-                            status: if self.compacted && value["is_error"] != true {
-                                "completed"
-                            } else {
-                                "failed"
-                            }
-                            .into(),
+                            status: if completed { "completed" } else { "failed" }.into(),
                         });
                     }
                 }

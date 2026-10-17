@@ -257,6 +257,27 @@ async fn spawn(
             })
         })
         .transpose()?;
+    // Only a Pi parent passes its own model on; Cloud's default Pi model may not work with the user's logins.
+    let pi_parent = m
+        .local
+        .lock()
+        .unwrap()
+        .sessions
+        .get(&parent)
+        .map(|p| p.harness)
+        == Some(crate::runtime::Kind::Pi);
+    if harness == Some(crate::runtime::Kind::Pi)
+        && !pi_parent
+        && !input
+            .model
+            .as_deref()
+            .and_then(|m| m.split_once('/'))
+            .is_some_and(|(p, n)| !p.is_empty() && !n.is_empty())
+    {
+        return Err(bad(
+            "Select a Pi provider and model: add --model provider/model, for example anthropic/claude-haiku-5-5",
+        ));
+    }
     let key = match input.request_id.clone() {
         Some(key) => key,
         None => random_key().map_err(|e| fail(StatusCode::SERVICE_UNAVAILABLE, &e.to_string()))?,
