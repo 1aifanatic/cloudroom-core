@@ -1,7 +1,7 @@
 """Browser-facing preview regressions. Real HTTP/Unix sockets; no SSH or production access."""
 import concurrent.futures
 import contextlib
-from http.server import BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import http.client
 import importlib.util
 from pathlib import Path
@@ -109,6 +109,34 @@ class PreviewTests(unittest.TestCase):
             self.assertEqual(self.request()[2], b'ok')
             self.assertLess(time.monotonic() - started, 2)
             self.assertEqual(slow.result()[0], 405)
+
+    def test_relay_preserves_the_core_base_path(self):
+        expected = '/core/v1/previews/3000/tunnel?device=test-device'
+
+        class Gateway(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(101 if self.path == expected else 404)
+                self.end_headers()
+
+            def log_message(self, *_):
+                pass
+
+        with HTTPServer(('127.0.0.1', 0), Gateway) as gateway:
+            worker = threading.Thread(target=gateway.serve_forever, kwargs={'poll_interval': .01})
+            worker.start()
+            try:
+                core = SimpleNamespace(url=f'http://127.0.0.1:{gateway.server_port}/core', headers={})
+                relay = SimpleNamespace(core=core, port=3000, device='test-device')
+                for prefix in ['/core', '']:
+                    expected = prefix + '/v1/previews/3000/tunnel?device=test-device'
+                    core.url = f'http://127.0.0.1:{gateway.server_port}{prefix}'
+                    for protocol in ['websocket', 'cloudroom-tunnel']:
+                        remote, rest = preview.Relay.connect(relay, protocol)
+                        remote.close()
+                        self.assertEqual(rest, b'')
+            finally:
+                gateway.shutdown()
+                worker.join()
 
 
 if __name__ == '__main__':

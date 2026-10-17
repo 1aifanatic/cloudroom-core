@@ -341,7 +341,7 @@ class Relay:
         if url.scheme == 'https':
             remote = ssl.create_default_context().wrap_socket(remote, server_hostname=url.hostname)
         headers = ''.join(f'{key}: {value}\r\n' for key, value in self.core.headers.items())
-        remote.sendall(f'GET /v1/previews/{self.port}/tunnel?device={self.device} HTTP/1.1\r\nHost: {url.netloc}\r\n'
+        remote.sendall(f'GET {url.path.rstrip("/")}/v1/previews/{self.port}/tunnel?device={self.device} HTTP/1.1\r\nHost: {url.netloc}\r\n'
                        f'Connection: Upgrade\r\nUpgrade: {protocol}\r\n{headers}\r\n'.encode())
         head = b''
         while b'\r\n\r\n' not in head:
