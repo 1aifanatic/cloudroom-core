@@ -16,6 +16,27 @@ installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
 
 
+class QuickInstallTests(unittest.TestCase):
+    def test_startup_requires_a_healthy_api_and_an_active_service(self):
+        script = (Path(__file__).resolve().parents[1] / 'install/install.sh').read_text()
+        # Exercise the installer's startup block without installing anything on the host.
+        startup = script.split("echo 'Starting the service...'", 1)[1].split('cat <<EOF', 1)[0]
+        for healthy, active, expected in [(True, True, 0), (False, True, 1), (True, False, 1)]:
+            with self.subTest(healthy=healthy, active=active):
+                stubs = f'''set -euo pipefail
+token=synthetic-test-token
+fail() {{ echo "$*" >&2; exit 1; }}
+curl() {{ return {0 if healthy else 22}; }}
+sleep() {{ :; }}
+systemctl() {{
+  if [ "$1" = is-active ]; then return {0 if active else 1}; fi
+}}
+'''
+                result = subprocess.run(['bash', '-c', stubs + startup], capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertNotIn('synthetic-test-token', result.stdout + result.stderr)
+
+
 class InstallerTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='cloudroom-installer-')

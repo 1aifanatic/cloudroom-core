@@ -99,11 +99,13 @@ python3 $LIB/configure.py --storage-only $ETC
 echo 'Starting the service...'
 systemctl daemon-reload
 systemctl enable --now cloudroom.service
+healthy=false
 for _ in $(seq 30); do
   printf 'header = "Authorization: Bearer %s"\n' "$token" |
-    curl --config - --silent --fail http://127.0.0.1:9840/v1/health >/dev/null && break
+    curl --config - --silent --fail http://127.0.0.1:9840/v1/health >/dev/null && { healthy=true; break; }
   sleep 1
 done || true
+"$healthy" || fail 'the API did not become healthy; check: journalctl -u cloudroom.service -n 50'
 systemctl is-active --quiet cloudroom.service || fail 'the service did not start; check: journalctl -u cloudroom.service -n 50'
 
 cat <<EOF
