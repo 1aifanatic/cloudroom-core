@@ -6,7 +6,7 @@ Your agents get their own room in the cloud.
 
 Cloudroom core runs coding agents on your own Linux machine and saves their chat history. It powers the cloud side of the [Cloudroom app](https://github.com/davidondrej/cloudroom-gui), which runs Claude Code, Codex, and Pi on your Mac or in the cloud.
 
-- Works with Codex, Claude Code, Pi, and Cursor.
+- Works with Claude Code, Codex, Pi, OpenCode, Hermes, Cursor, and Devin.
 - Agents use your own logins to call their models.
 - One Rust service per machine. No Cloudroom account needed.
 
@@ -16,7 +16,7 @@ Don't want to host it yourself? Hosted Cloudroom is invite-only for now. [Join t
 
 ## Get started
 
-- [Install on Ubuntu 24.04](docs/setup.md) with one script, on a VPS, a home server, or a spare laptop. A database on the same machine works.
+- [Install on Ubuntu 24.04](docs/setup.md) with one script, on a VPS, a home server, or a spare laptop. No database needed.
 - [Reach it from your laptop](docs/setup.md#reach-it-from-your-other-devices) with Tailscale, and [upgrade](docs/setup.md#upgrade) in place.
 - [HTTP API](docs/api.md): every endpoint, event, and error code.
 - [Linux builds](https://github.com/davidondrej/cloudroom-core/releases): tested binaries for each release.
@@ -24,9 +24,9 @@ Don't want to host it yourself? Hosted Cloudroom is invite-only for now. [Join t
 ## Security
 
 - Agents run as a separate Linux user, with no admin rights and no `sudo`.
-- Agents can't read the core's token, database password, or history files.
+- Agents can't read the core's token or history files.
 - Every API request needs a secret token. The API listens only on localhost unless you put it behind HTTPS.
-- History is saved to PostgreSQL: on the same machine, or on another one over verified TLS.
+- History stays on the machine's own disk. [Back it up](docs/setup.md#3-saved-history) like any other folder.
 - Command Guard blocks a few disastrous commands, like wiping a home folder.
 
 Agents run without approval prompts, so give each trusted user their own machine.
@@ -44,8 +44,6 @@ Needs Rust 1.89+, Git, and the agent CLIs you want to run.
 cargo build --locked --release
 cargo test --locked --all-targets
 ```
-
-Apply the two SQL files in `docs/database/` to a dedicated PostgreSQL database. The core never runs migrations itself.
 
 More docs: [storage](docs/storage.md) · [harnesses](docs/harnesses.md) · [session lifecycle](docs/session-lifecycle.md) · [diagnostics](docs/observability.md) · [dashboard API](docs/dashboard.md)
 
